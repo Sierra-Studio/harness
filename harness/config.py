@@ -41,7 +41,7 @@ def _float(name: str, default: float) -> float:
 class Config:
     # provider
     openrouter_api_key: str = os.environ.get("OPENROUTER_API_KEY", "")
-    model: str = os.environ.get("HARNESS_MODEL", "anthropic/claude-sonnet-4-6")
+    model: str = os.environ.get("HARNESS_MODEL", "deepseek/deepseek-v4-pro")
     openrouter_base_url: str = os.environ.get(
         "OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1"
     )
