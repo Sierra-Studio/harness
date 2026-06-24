@@ -116,6 +116,15 @@ h.add_mcp_http("https://fellow.app/mcp", name="fellow",
 The model finds these tools through `SearchTools` (keyword/full-text search over
 `tool_index`), never via the prompt. See `examples/add_fellow_mcp.py`.
 
+**From the CLI**, remote HTTP servers are auto-connected from the env — no code:
+```bash
+# .env
+MCP_HTTP_SERVERS=fellow=https://fellow.app/mcp   # comma-separated name=url
+MCP_FELLOW_TOKEN=...                              # MCP_<NAME>_TOKEN -> bearer auth
+```
+`uv run harness chat` connects each one at startup (failures are reported and
+skipped) and disconnects them on exit.
+
 ## Status / notes
 
 - Core logic verified by `tests/test_core.py` (12/12) and `demo.py`.

@@ -11,7 +11,7 @@ import sys
 from pathlib import Path
 
 from .app import Harness
-from .config import load_config
+from .config import load_config, mcp_http_servers
 
 
 def init_db() -> int:
@@ -36,6 +36,16 @@ def chat() -> int:
     backend = "Postgres" if cfg.database_url else "in-memory"
     provider = "OpenRouter" if cfg.openrouter_api_key else "FakeProvider (offline)"
     print(f"Harness ready · repo={backend} · provider={provider} · model={cfg.model}")
+
+    # connect remote HTTP MCP servers declared in the env (e.g. Fellow)
+    for srv in mcp_http_servers():
+        try:
+            client = h.add_mcp_http(srv["url"], srv["name"], srv["headers"])
+            print(f"MCP '{srv['name']}' connected · {len(client.list_tools())} tools "
+                  f"indexed from {srv['url']}")
+        except Exception as e:
+            print(f"MCP '{srv['name']}' FAILED ({srv['url']}): {e}")
+
     external_id = input("user id: ").strip() or "demo-user"
     session = h.start_session(external_id)
     print(f"session {session.id} (context_window={session.context_window}, "
@@ -54,6 +64,11 @@ def chat() -> int:
     created = h.close_session(session)
     if created:
         print(f"\nInduced skills: {created}")
+    for client in h.tools.mcp_clients.values():
+        try:
+            client.stop()
+        except Exception:
+            pass
     print("session closed.")
     return 0
 

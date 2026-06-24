@@ -141,6 +141,23 @@ def test_search_tools_keyword_match():
     assert "read_file" not in out["content"]   # keyword search excludes non-matches
 
 
+def test_mcp_http_servers_config():
+    import os
+    from harness.config import mcp_http_servers
+    os.environ["MCP_HTTP_SERVERS"] = "fellow=https://fellow.app/mcp, other=https://x/mcp"
+    os.environ["MCP_FELLOW_TOKEN"] = "tok123"
+    os.environ.pop("MCP_OTHER_TOKEN", None)
+    try:
+        servers = mcp_http_servers()
+        by_name = {s["name"]: s for s in servers}
+        assert by_name["fellow"]["url"] == "https://fellow.app/mcp"
+        assert by_name["fellow"]["headers"]["Authorization"] == "Bearer tok123"
+        assert by_name["other"]["headers"] == {}   # no token -> no auth header
+    finally:
+        os.environ.pop("MCP_HTTP_SERVERS", None)
+        os.environ.pop("MCP_FELLOW_TOKEN", None)
+
+
 def test_http_mcp_sse_parser():
     from harness.mcp_client import HttpMcpClient
     lines = [

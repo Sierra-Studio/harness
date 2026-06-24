@@ -67,3 +67,23 @@ class Config:
 
 def load_config() -> Config:
     return Config()
+
+
+def mcp_http_servers() -> list[dict]:
+    """Remote HTTP MCP servers declared in the environment.
+
+    MCP_HTTP_SERVERS = "name=url, name2=url2"
+    Per-server bearer token (optional): MCP_<NAME>_TOKEN
+    """
+    raw = os.environ.get("MCP_HTTP_SERVERS", "").strip()
+    servers: list[dict] = []
+    for entry in raw.split(","):
+        entry = entry.strip()
+        if not entry or "=" not in entry:
+            continue
+        name, _, url = entry.partition("=")
+        name, url = name.strip(), url.strip()
+        token = os.environ.get(f"MCP_{name.upper()}_TOKEN", "").strip()
+        headers = {"Authorization": f"Bearer {token}"} if token else {}
+        servers.append({"name": name, "url": url, "headers": headers})
+    return servers
