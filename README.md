@@ -14,7 +14,7 @@ persistence backend are all swappable.
 | **Loop** | `perceive → build context → call model → run tools → repeat`, with a per-session **token-budget guard** that stops and returns the partial reply. |
 | **Memory** | Window = `system prompt + chained summary + active turns`. Budget = `context_window − system_prompt − response_reserve`. On overflow: keep the last 10% verbatim, fold the rest (plus the previous summary) into a new **chained** summary. Folded turns stay in Postgres (`in_window=false`). |
 | **Checkpoints** | Every 20 **user** turns, the subject is classified in a few words. |
-| **Tools** | Built-ins always in the prompt — `SearchTools`, `GetTools`, `GetSkills`, `Bash`. **Index Tools** (from MCP) live in `tool_index` and are reached on demand via semantic search — **O(1)** prompt cost regardless of how many MCP tools exist. |
+| **Tools** | Built-ins always in the prompt — `SearchTools`, `GetTools`, `GetSkills`, `Bash`. **Index Tools** (from MCP) live in `tool_index` and are reached on demand via **keyword (full-text) search in Postgres** — **O(1)** prompt cost regardless of how many MCP tools exist. |
 | **Skills** | Owned per user. Every 10 closed sessions, an induction pass mines recurring requests into new skills (deduped by embedding). |
 | **Provider** | OpenRouter: model context window from `/models`, chat completions with tool calling, real `usage` recorded per turn. |
 | **Observability** | One `step_logs` row per loop step; `tokens_in/out` on every model turn; live totals on the session. |
@@ -89,10 +89,11 @@ Harness(cfg, repo=PostgresRepository(dsn))       # forced backend
 from harness.mcp_client import McpClient, ingest_server
 client = McpClient(["my-mcp-server", "--stdio"], name="mymcp")
 client.start()
-ingest_server(harness.repo, harness.embedder, client)   # -> tool_index
-harness.tools.mcp_clients["mymcp"] = client             # enable dispatch
+ingest_server(harness.repo, client)          # -> tool_index (stored in Postgres)
+harness.tools.mcp_clients["mymcp"] = client  # enable dispatch
 ```
-The model then finds these tools through `SearchTools`, never via the prompt.
+The model finds these tools through `SearchTools` (keyword/full-text search over
+`tool_index`), never via the prompt.
 
 ## Status / notes
 

@@ -9,6 +9,7 @@ The harness logic depends only on `Repository`, never on a concrete backend.
 from __future__ import annotations
 
 import abc
+import re
 import uuid
 from typing import Any, Optional
 
@@ -18,6 +19,11 @@ from .models import Session, Skill, Summary, ToolSpec, Turn, User
 
 def _uuid() -> str:
     return str(uuid.uuid4())
+
+
+def _terms(text: str) -> list[str]:
+    """Lowercased alphanumeric word tokens for keyword search."""
+    return re.findall(r"[a-z0-9]+", text.lower())
 
 
 class Repository(abc.ABC):
@@ -77,12 +83,12 @@ class Repository(abc.ABC):
     @abc.abstractmethod
     def search_skills(self, user_id: str, embedding: list[float], k: int) -> list[Skill]: ...
 
-    # --- tool index ---
+    # --- tool index (keyword search, no embeddings) ---
     @abc.abstractmethod
     def upsert_tool(self, mcp_server: str, name: str, description: str,
-                    input_schema: dict, embedding: list[float]) -> None: ...
+                    input_schema: dict) -> None: ...
     @abc.abstractmethod
-    def search_tools(self, embedding: list[float], k: int) -> list[ToolSpec]: ...
+    def search_tools(self, query: str, k: int) -> list[ToolSpec]: ...
     @abc.abstractmethod
     def get_tool(self, name: str) -> Optional[ToolSpec]: ...
 
@@ -200,19 +206,26 @@ class InMemoryRepository(Repository):
         items.sort(key=lambda s: cosine(s.embedding, embedding), reverse=True)
         return items[:k]
 
-    def upsert_tool(self, mcp_server, name, description, input_schema, embedding) -> None:
+    def upsert_tool(self, mcp_server, name, description, input_schema) -> None:
         for t in self.tools:
             if t.mcp_server == mcp_server and t.name == name:
-                t.description, t.input_schema, t.embedding = description, input_schema, embedding
+                t.description, t.input_schema = description, input_schema
                 return
         self.tools.append(ToolSpec(id=_uuid(), mcp_server=mcp_server, name=name,
-                                   description=description, input_schema=input_schema,
-                                   embedding=embedding))
+                                   description=description, input_schema=input_schema))
 
-    def search_tools(self, embedding, k) -> list[ToolSpec]:
-        items = [t for t in self.tools if t.enabled]
-        items.sort(key=lambda t: cosine(t.embedding, embedding), reverse=True)
-        return items[:k]
+    def search_tools(self, query, k) -> list[ToolSpec]:
+        terms = set(_terms(query))
+        scored: list[tuple[int, ToolSpec]] = []
+        for t in self.tools:
+            if not t.enabled:
+                continue
+            hay = f"{t.name} {t.description}".lower()
+            score = sum(1 for term in terms if term in hay)
+            if score or not terms:
+                scored.append((score, t))
+        scored.sort(key=lambda x: x[0], reverse=True)
+        return [t for _, t in scored[:k]]
 
     def get_tool(self, name) -> Optional[ToolSpec]:
         for t in self.tools:
@@ -391,23 +404,35 @@ class PostgresRepository(Repository):
         return [Skill(id=str(r[0]), user_id=user_id, name=r[1], summary=r[2],
                       body=r[3], origin=r[4]) for r in rows]
 
-    # -- tool index --
-    def upsert_tool(self, mcp_server, name, description, input_schema, embedding) -> None:
+    # -- tool index (Postgres full-text search, no embeddings) --
+    def upsert_tool(self, mcp_server, name, description, input_schema) -> None:
         import json
         self._exec(
-            """INSERT INTO tool_index(mcp_server,name,description,input_schema,embedding)
-               VALUES(%s,%s,%s,%s,%s)
+            """INSERT INTO tool_index(mcp_server,name,description,input_schema)
+               VALUES(%s,%s,%s,%s)
                ON CONFLICT (mcp_server,name) DO UPDATE
                  SET description=EXCLUDED.description,
-                     input_schema=EXCLUDED.input_schema,
-                     embedding=EXCLUDED.embedding""",
-            (mcp_server, name, description, json.dumps(input_schema), self._vec(embedding)))
+                     input_schema=EXCLUDED.input_schema""",
+            (mcp_server, name, description, json.dumps(input_schema)))
 
-    def search_tools(self, embedding, k) -> list[ToolSpec]:
-        rows = self._rows(
-            """SELECT id,mcp_server,name,description,input_schema FROM tool_index
-               WHERE enabled ORDER BY embedding <=> %s LIMIT %s""",
-            (self._vec(embedding), k))
+    def search_tools(self, query, k) -> list[ToolSpec]:
+        terms = _terms(query)
+        if not terms:
+            rows = self._rows(
+                """SELECT id,mcp_server,name,description,input_schema
+                   FROM tool_index WHERE enabled LIMIT %s""", (k,))
+        else:
+            tsquery = " | ".join(terms)  # OR of terms for recall
+            rows = self._rows(
+                """SELECT id,mcp_server,name,description,input_schema,
+                          ts_rank(to_tsvector('english', name||' '||coalesce(description,'')),
+                                  to_tsquery('english', %s)) AS rank
+                   FROM tool_index
+                   WHERE enabled
+                     AND to_tsvector('english', name||' '||coalesce(description,''))
+                         @@ to_tsquery('english', %s)
+                   ORDER BY rank DESC LIMIT %s""",
+                (tsquery, tsquery, k))
         return [ToolSpec(id=str(r[0]), mcp_server=r[1], name=r[2], description=r[3],
                          input_schema=r[4]) for r in rows]
 

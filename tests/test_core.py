@@ -15,7 +15,8 @@ from harness.tokenizer import count_tokens
 
 
 def _harness(provider, **overrides):
-    cfg = dataclasses.replace(Config(), **overrides)
+    # force in-memory repo so tests never depend on ambient .env / DATABASE_URL
+    cfg = dataclasses.replace(Config(), database_url="", **overrides)
     return Harness(cfg, system_prompt="sys.", provider=provider)
 
 
@@ -127,17 +128,16 @@ def test_skill_induction_and_dedup():
     assert len(h.repo.list_skills(uid)) == 1
 
 
-def test_search_tools_finds_indexed_tool():
+def test_search_tools_keyword_match():
     p = FakeProvider(context_window=4000)
     h = _harness(p)
-    emb = h.embedder.embed("send an email message to someone")
-    h.repo.upsert_tool("mail", "send_email", "Send an email message", {}, emb)
-    h.repo.upsert_tool("fs", "read_file", "Read a file from disk",
-                       {}, h.embedder.embed("read a file from disk"))
+    h.repo.upsert_tool("mail", "send_email", "Send an email message", {})
+    h.repo.upsert_tool("fs", "read_file", "Read a file from disk", {})
     s = h.start_session("u1")
     out = h.tools.dispatch(s, {"id": "1", "function": {
         "name": "SearchTools", "arguments": '{"query": "email the customer"}'}})
     assert "send_email" in out["content"]
+    assert "read_file" not in out["content"]   # keyword search excludes non-matches
 
 
 if __name__ == "__main__":

@@ -75,16 +75,19 @@ CREATE TABLE IF NOT EXISTS skills (
 CREATE INDEX IF NOT EXISTS idx_skills_user ON skills(user_id);
 
 -- Index of Index Tools (from MCP). NOT injected into the system prompt.
+-- Searched by keyword (Postgres full-text), no embeddings.
 CREATE TABLE IF NOT EXISTS tool_index (
   id           uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   mcp_server   text NOT NULL,
   name         text NOT NULL,
   description  text NOT NULL,
   input_schema jsonb NOT NULL,
-  embedding    vector({{EMBEDDING_DIM}}),
   enabled      boolean NOT NULL DEFAULT true,
   UNIQUE (mcp_server, name)
 );
+-- GIN index backing the full-text SearchTools query.
+CREATE INDEX IF NOT EXISTS idx_tool_index_fts ON tool_index
+  USING gin (to_tsvector('english', name || ' ' || coalesce(description, '')));
 
 -- Observability: one row per loop step.
 CREATE TABLE IF NOT EXISTS step_logs (

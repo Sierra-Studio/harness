@@ -79,8 +79,12 @@ class McpClient:
             self._proc = None
 
 
-def ingest_server(repo, embedder, client: McpClient) -> int:
-    """List a server's tools and upsert them into tool_index. Returns count."""
+def ingest_server(repo, client: McpClient) -> int:
+    """List a server's tools and upsert them into tool_index. Returns count.
+
+    Tools are stored in Postgres and searched by keyword (full-text) — no
+    embeddings involved.
+    """
     n = 0
     for tool in client.list_tools():
         name = tool.get("name")
@@ -88,7 +92,6 @@ def ingest_server(repo, embedder, client: McpClient) -> int:
             continue
         description = tool.get("description", "")
         schema = tool.get("inputSchema") or tool.get("input_schema") or {}
-        emb = embedder.embed(f"{name}\n{description}")
-        repo.upsert_tool(client.name, name, description, schema, emb)
+        repo.upsert_tool(client.name, name, description, schema)
         n += 1
     return n

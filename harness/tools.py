@@ -31,7 +31,7 @@ class ToolRegistry:
                 "parameters": {"type": "object", "properties": props,
                                "required": required}}}
         return [
-            fn("SearchTools", "Semantic search over available external tools. Use "
+            fn("SearchTools", "Keyword search over available external tools. Use "
                "this to find a tool by describing what you need.",
                {"query": {"type": "string"},
                 "k": {"type": "integer", "default": 8}}, ["query"]),
@@ -81,8 +81,7 @@ class ToolRegistry:
     def _search_tools(self, args: dict) -> str:
         query = args.get("query", "")
         k = int(args.get("k", 8))
-        emb = self.embedder.embed(query)
-        hits = self.repo.search_tools(emb, k)
+        hits = self.repo.search_tools(query, k)  # keyword search in Postgres
         if not hits:
             return "No tools found."
         return json.dumps([{"name": t.name, "description": t.description}

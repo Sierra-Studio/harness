@@ -38,6 +38,7 @@ def main() -> None:
     # tight budgets so summarization & the budget guard actually fire in a demo
     cfg = dataclasses.replace(
         Config(),
+        database_url="",  # offline demo always uses the in-memory repo
         token_budget_per_session=500_000,
         response_reserve_tokens=10,
         checkpoint_every_user_turns=3,
