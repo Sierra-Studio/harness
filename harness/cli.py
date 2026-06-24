@@ -49,8 +49,9 @@ def chat() -> int:
 
     external_id = input("user id: ").strip() or "demo-user"
     session = h.start_session(external_id)
+    budget_label = session.token_budget or "unlimited"
     print(f"session {session.id} (context_window={session.context_window}, "
-          f"budget={session.token_budget})")
+          f"budget={budget_label})")
     try:
         while True:
             msg = input("\nyou> ").strip()

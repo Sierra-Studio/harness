@@ -37,6 +37,17 @@ def _float(name: str, default: float) -> float:
         return default
 
 
+def _budget(name: str, default: int) -> int:
+    """Token budget: 0 (or none/unlimited/inf/-1) means no limit."""
+    raw = os.environ.get(name, "").strip().lower()
+    if raw in ("0", "none", "unlimited", "inf", "-1"):
+        return 0
+    try:
+        return int(raw or default)
+    except ValueError:
+        return default
+
+
 @dataclass(frozen=True)
 class Config:
     # provider
@@ -55,7 +66,7 @@ class Config:
     embedding_model: str = os.environ.get("EMBEDDING_MODEL", "text-embedding-3-small")
     embedding_dim: int = _int("EMBEDDING_DIM", 1536)
     # budgets / loop
-    token_budget_per_session: int = _int("TOKEN_BUDGET_PER_SESSION", 500_000)
+    token_budget_per_session: int = _budget("TOKEN_BUDGET_PER_SESSION", 500_000)  # 0 = unlimited
     response_reserve_tokens: int = _int("RESPONSE_RESERVE_TOKENS", 4_000)
     max_steps: int = _int("MAX_STEPS", 25)
     checkpoint_every_user_turns: int = _int("CHECKPOINT_EVERY_USER_TURNS", 20)

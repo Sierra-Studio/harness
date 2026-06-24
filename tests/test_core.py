@@ -70,6 +70,36 @@ def test_budget_guard_returns_partial():
     assert h.repo.get_session(s.id).status == "budget_exhausted"
 
 
+def test_unlimited_token_budget():
+    p = FakeProvider(context_window=4000)
+    # would-be expensive run: many tool calls, but budget 0 == no limit
+    for _ in range(6):
+        p.queue(content="...", tool_calls=[{"id": "x", "function": {
+            "name": "Bash", "arguments": '{"command": "echo k"}'}}])
+    p.queue(content="finished")
+    h = _harness(p, token_budget_per_session=0)
+    s = h.start_session("u1")
+    r = h.run_turn(s, "do a lot")
+    assert r.status == "ok" and r.text == "finished"   # never budget_exhausted
+    assert h.repo.get_session(s.id).status != "budget_exhausted"
+
+
+def test_budget_config_unlimited_parsing():
+    import os
+    from harness.config import _budget
+    for val in ("0", "none", "unlimited", "-1"):
+        os.environ["TOKEN_BUDGET_PER_SESSION"] = val
+        try:
+            assert _budget("TOKEN_BUDGET_PER_SESSION", 500_000) == 0, val
+        finally:
+            os.environ.pop("TOKEN_BUDGET_PER_SESSION", None)
+    os.environ["TOKEN_BUDGET_PER_SESSION"] = "12345"
+    try:
+        assert _budget("TOKEN_BUDGET_PER_SESSION", 500_000) == 12345
+    finally:
+        os.environ.pop("TOKEN_BUDGET_PER_SESSION", None)
+
+
 def test_summarization_compresses_window():
     p = FakeProvider(context_window=140)
     h = _harness(p, response_reserve_tokens=10, summary_keep_ratio=0.2)

@@ -51,8 +51,8 @@ class AgentLoop:
         for step in range(self.cfg.max_steps):
             session = self.repo.get_session(session.id)
 
-            # --- token-budget guard: stop & return partial ---
-            if session.tokens_spent >= session.token_budget:
+            # --- token-budget guard: stop & return partial (budget 0 = unlimited) ---
+            if session.token_budget and session.tokens_spent >= session.token_budget:
                 self.repo.set_session_status(session.id, "budget_exhausted")
                 return TurnResult(final_text or "(token budget exhausted)",
                                   "budget_exhausted", step, session.tokens_spent)

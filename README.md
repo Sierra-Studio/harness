@@ -132,7 +132,7 @@ skipped) and disconnects them on exit. OAuth tokens are cached under
 
 ## Status / notes
 
-- Core logic verified by `tests/test_core.py` (16/16) and `demo.py`.
+- Core logic verified by `tests/test_core.py` (18/18) and `demo.py`.
 - Validated end-to-end against **real Postgres + pgvector** (repository, vector
   `SearchTools`, summarization, checkpoints, induction, token accounting).
 - OpenRouter integration verified up to billing: the harness authenticates,
