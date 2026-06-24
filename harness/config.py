@@ -74,6 +74,7 @@ def mcp_http_servers() -> list[dict]:
 
     MCP_HTTP_SERVERS = "name=url, name2=url2"
     Per-server bearer token (optional): MCP_<NAME>_TOKEN
+    Per-server interactive OAuth (optional): MCP_<NAME>_OAUTH=1
     """
     raw = os.environ.get("MCP_HTTP_SERVERS", "").strip()
     servers: list[dict] = []
@@ -84,6 +85,7 @@ def mcp_http_servers() -> list[dict]:
         name, _, url = entry.partition("=")
         name, url = name.strip(), url.strip()
         token = os.environ.get(f"MCP_{name.upper()}_TOKEN", "").strip()
+        oauth = os.environ.get(f"MCP_{name.upper()}_OAUTH", "").strip() in ("1", "true", "yes")
         headers = {"Authorization": f"Bearer {token}"} if token else {}
-        servers.append({"name": name, "url": url, "headers": headers})
+        servers.append({"name": name, "url": url, "headers": headers, "oauth": oauth})
     return servers

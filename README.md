@@ -73,6 +73,7 @@ harness/
   provider.py      # Provider contract + OpenRouter + FakeProvider
   sandbox.py       # SandboxBackend contract + local-subprocess impl
   mcp_client.py    # MCP clients: stdio + Streamable-HTTP, + tool ingestion
+  oauth.py         # OAuth 2.1 flow for remote MCP (discovery, DCR, PKCE, cache)
   memory.py        # budget, build_window, chained summarize, checkpoints
   tools.py         # built-ins + Index Tool dispatch
   skills.py        # induction (every N sessions, deduped)
@@ -109,9 +110,11 @@ h = Harness()
 h.add_mcp_stdio(["npx", "-y", "@modelcontextprotocol/server-filesystem", "/tmp"],
                 name="fs")
 
-# remote Streamable-HTTP server (pass headers for auth)
+# remote Streamable-HTTP server — static bearer token...
 h.add_mcp_http("https://fellow.app/mcp", name="fellow",
                headers={"Authorization": f"Bearer {token}"})
+# ...or the interactive OAuth 2.1 flow (browser login + PKCE, token cached)
+h.add_mcp_http("https://fellow.app/mcp", name="fellow", oauth=True)
 ```
 The model finds these tools through `SearchTools` (keyword/full-text search over
 `tool_index`), never via the prompt. See `examples/add_fellow_mcp.py`.
@@ -120,14 +123,16 @@ The model finds these tools through `SearchTools` (keyword/full-text search over
 ```bash
 # .env
 MCP_HTTP_SERVERS=fellow=https://fellow.app/mcp   # comma-separated name=url
-MCP_FELLOW_TOKEN=...                              # MCP_<NAME>_TOKEN -> bearer auth
+MCP_FELLOW_OAUTH=1                                # browser OAuth (PKCE, token cached)
+# MCP_FELLOW_TOKEN=...                            # or a static bearer instead
 ```
 `uv run harness chat` connects each one at startup (failures are reported and
-skipped) and disconnects them on exit.
+skipped) and disconnects them on exit. OAuth tokens are cached under
+`~/.harness/mcp-auth/`, so the browser login happens only once.
 
 ## Status / notes
 
-- Core logic verified by `tests/test_core.py` (12/12) and `demo.py`.
+- Core logic verified by `tests/test_core.py` (16/16) and `demo.py`.
 - Validated end-to-end against **real Postgres + pgvector** (repository, vector
   `SearchTools`, summarization, checkpoints, induction, token accounting).
 - OpenRouter integration verified up to billing: the harness authenticates,

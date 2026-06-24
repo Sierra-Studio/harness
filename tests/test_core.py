@@ -158,6 +158,70 @@ def test_mcp_http_servers_config():
         os.environ.pop("MCP_FELLOW_TOKEN", None)
 
 
+def test_oauth_pkce_and_helpers():
+    import base64, hashlib
+    from harness.oauth import make_pkce, origin, parse_resource_metadata_url, OAuthClient
+    verifier, challenge = make_pkce()
+    expected = base64.urlsafe_b64encode(
+        hashlib.sha256(verifier.encode()).digest()).rstrip(b"=").decode()
+    assert challenge == expected                       # S256 binding holds
+    assert origin("https://fellow.app/mcp/x?y=1") == "https://fellow.app"
+    assert parse_resource_metadata_url(
+        'Bearer resource_metadata="https://as/.well-known/x"') == "https://as/.well-known/x"
+    assert parse_resource_metadata_url("Bearer realm=foo") is None
+    assert OAuthClient._expired({"obtained_at": 0, "expires_in": 3600}) is True
+    assert OAuthClient._expired({}) is False           # no expiry info -> not expired
+
+
+def test_oauth_token_cache(tmp_path):
+    from harness.oauth import OAuthClient, OAuthConfig
+    oc = OAuthClient(http_client=None, cfg=OAuthConfig(cache_dir=tmp_path))
+    oc._save_cache("fellow.app", {"client_id": "c1", "tokens": {"access_token": "a"}})
+    loaded = oc._load_cache("fellow.app")
+    assert loaded["client_id"] == "c1" and loaded["tokens"]["access_token"] == "a"
+    assert oc._load_cache("unknown.host") == {}
+
+
+def test_http_mcp_oauth_retry_on_401():
+    """A 401 triggers the OAuth flow (stubbed) and the request is retried with a token."""
+    from harness.mcp_client import HttpMcpClient
+
+    class Resp401:
+        status_code = 401
+        headers = {"www-authenticate": 'Bearer resource_metadata="https://as/meta"'}
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def read(self): return b""
+        def raise_for_status(self): raise AssertionError("should retry, not raise")
+
+    class RespOK:
+        status_code = 200
+        headers = {"content-type": "application/json"}
+        def __init__(self, payload): self._p = payload
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def raise_for_status(self): pass
+        def read(self):
+            import json
+            return json.dumps(self._p)
+
+    class StubHttp:
+        def __init__(self): self.calls = 0
+        def stream(self, method, url, json, headers):
+            self.calls += 1
+            if self.calls == 1:                         # first attempt: unauthorized
+                assert "Authorization" not in headers
+                return Resp401()
+            assert headers.get("Authorization") == "Bearer tok-xyz"
+            return RespOK({"jsonrpc": "2.0", "id": json["id"], "result": {"ok": True}})
+
+    c = HttpMcpClient("https://srv/mcp", oauth=True)
+    c._client = StubHttp()
+    # stub the OAuth dance so no browser/network is needed
+    c._authorize = lambda www: c._extra.__setitem__("Authorization", "Bearer tok-xyz")
+    assert c._request("tools/list", {}) == {"ok": True}
+
+
 def test_http_mcp_sse_parser():
     from harness.mcp_client import HttpMcpClient
     lines = [
@@ -179,6 +243,7 @@ def test_http_mcp_call_via_stub_transport():
     h = _harness(p)
 
     class StubResp:
+        status_code = 200
         def __init__(self, payload):
             self._payload = payload
             self.headers = {"content-type": "application/json"}

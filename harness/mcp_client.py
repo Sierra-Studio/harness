@@ -95,7 +95,7 @@ class HttpMcpClient:
     """
 
     def __init__(self, url: str, name: str = "", headers: Optional[dict] = None,
-                 timeout: float = 60):
+                 timeout: float = 60, oauth=None):
         self.url = url
         self.name = name or url
         self._extra = headers or {}
@@ -104,6 +104,17 @@ class HttpMcpClient:
         self._id = 0
         self._session_id: Optional[str] = None
         self._protocol = _PROTOCOL_VERSION
+        # oauth: True (default config), an OAuthConfig, or None/False (disabled)
+        self._oauth_cfg = self._resolve_oauth(oauth)
+
+    @staticmethod
+    def _resolve_oauth(oauth):
+        if not oauth:
+            return None
+        if oauth is True:
+            from .oauth import OAuthConfig
+            return OAuthConfig()
+        return oauth  # assume an OAuthConfig instance
 
     def start(self) -> None:
         import httpx  # optional dependency
@@ -131,12 +142,18 @@ class HttpMcpClient:
         self._id += 1
         return self._id
 
-    def _request(self, method: str, params: dict) -> Any:
+    def _request(self, method: str, params: dict, _retried: bool = False) -> Any:
         rid = self._next_id()
         payload = {"jsonrpc": "2.0", "id": rid, "method": method, "params": params}
         assert self._client is not None
         with self._client.stream("POST", self.url, json=payload,
                                  headers=self._headers()) as r:
+            # OAuth: on 401, run the authorization flow and retry once
+            if r.status_code == 401 and self._oauth_cfg and not _retried:
+                www = r.headers.get("www-authenticate", "")
+                r.read()
+                self._authorize(www)
+                return self._request(method, params, _retried=True)
             r.raise_for_status()
             sid = r.headers.get("mcp-session-id")
             if sid:
@@ -150,6 +167,12 @@ class HttpMcpClient:
         if "error" in msg:
             raise RuntimeError(f"MCP error: {msg['error']}")
         return msg.get("result")
+
+    def _authorize(self, www_authenticate: str) -> None:
+        from .oauth import OAuthClient
+        token = OAuthClient(self._client, self._oauth_cfg).get_token(
+            self.url, www_authenticate)
+        self._extra["Authorization"] = f"Bearer {token}"
 
     def _notify(self, method: str, params: dict) -> None:
         # notifications get a 202 Accepted with no body

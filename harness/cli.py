@@ -40,7 +40,8 @@ def chat() -> int:
     # connect remote HTTP MCP servers declared in the env (e.g. Fellow)
     for srv in mcp_http_servers():
         try:
-            client = h.add_mcp_http(srv["url"], srv["name"], srv["headers"])
+            client = h.add_mcp_http(srv["url"], srv["name"], srv["headers"],
+                                    oauth=srv.get("oauth"))
             print(f"MCP '{srv['name']}' connected · {len(client.list_tools())} tools "
                   f"indexed from {srv['url']}")
         except Exception as e:

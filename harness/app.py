@@ -67,12 +67,14 @@ class Harness:
         return client
 
     def add_mcp_http(self, url: str, name: str = "",
-                     headers: dict | None = None) -> HttpMcpClient:
+                     headers: dict | None = None, oauth=None) -> HttpMcpClient:
         """Connect a remote Streamable-HTTP MCP server.
 
-        Pass headers for auth, e.g. {"Authorization": f"Bearer {token}"}.
+        Auth options: pass a static bearer via headers
+        ({"Authorization": f"Bearer {token}"}), or enable the interactive OAuth
+        flow with oauth=True (or an OAuthConfig).
         """
-        client = HttpMcpClient(url, name, headers=headers)
+        client = HttpMcpClient(url, name, headers=headers, oauth=oauth)
         client.start()
         n = ingest_server(self.repo, client)
         self.tools.mcp_clients[client.name] = client
