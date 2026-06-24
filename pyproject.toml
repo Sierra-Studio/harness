@@ -1,0 +1,24 @@
+[project]
+name = "harness"
+version = "1.0.0"
+description = "Pluggable, multi-tenant LLM agent harness (Memory, Skills, MCP, Tools, Loop) over OpenRouter + Postgres."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "httpx>=0.27",          # OpenRouter HTTP client
+    "psycopg[binary]>=3.1", # Postgres driver (real repository)
+    "tiktoken>=0.7",        # accurate token counting (heuristic fallback exists)
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[project.scripts]
+harness = "harness.cli:entry"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["harness"]

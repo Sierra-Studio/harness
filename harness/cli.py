@@ -1,7 +1,9 @@
 """Command-line entrypoint.
 
-    python -m harness.cli init-db     # create schema in DATABASE_URL
-    python -m harness.cli chat         # interactive session (uses OpenRouter if configured)
+    uv run harness init-db     # create schema in DATABASE_URL
+    uv run harness chat        # interactive session (uses OpenRouter if configured)
+
+(or without uv:  python -m harness.cli init-db | chat)
 """
 from __future__ import annotations
 
@@ -64,6 +66,11 @@ def main(argv: list[str]) -> int:
         return chat()
     print(__doc__)
     return 1
+
+
+def entry() -> int:
+    """Console-script entry point (`harness ...`)."""
+    return main(sys.argv)
 
 
 if __name__ == "__main__":

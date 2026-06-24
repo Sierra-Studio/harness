@@ -20,28 +20,40 @@ persistence backend are all swappable.
 | **Observability** | One `step_logs` row per loop step; `tokens_in/out` on every model turn; live totals on the session. |
 | **Bash sandbox** | Runs behind a pluggable `SandboxBackend`. Ships with a local-subprocess impl (one workdir per session). Swap for gVisor/Firecracker/K8s for real isolation. |
 
-## Quickstart
+## Quickstart (uv)
+
+Requires [uv](https://docs.astral.sh/uv/). One-time setup:
+```bash
+uv sync --extra dev    # creates .venv and installs deps from pyproject.toml
+```
 
 ### 1. Offline demo (no DB, no API key)
 Runs the whole harness with an in-memory repo and a scripted fake provider:
 ```bash
-python3 demo.py
+uv run python demo.py
 ```
 
 ### 2. Tests
 ```bash
-python3 tests/test_core.py        # or: python3 -m pytest -q
+uv run pytest -q
 ```
 
 ### 3. Real run (OpenRouter + Postgres)
 ```bash
-cp .env.example .env              # set OPENROUTER_API_KEY (needs credits)
-docker compose up -d              # Postgres + pgvector
-python3 -m harness.cli init-db    # apply schema.sql
-python3 -m harness.cli chat       # interactive session
+cp .env.example .env          # set OPENROUTER_API_KEY (needs credits)
+docker compose up -d          # Postgres + pgvector
+uv run harness init-db        # apply schema.sql
+uv run harness chat           # interactive session
 ```
 With `DATABASE_URL` unset the harness uses the in-memory repo; with
-`OPENROUTER_API_KEY` unset it uses the offline `FakeProvider`. Mix and match.
+`OPENROUTER_API_KEY` unset it uses the offline `FakeProvider`. Mix and match, e.g.
+force offline + in-memory:
+```bash
+DATABASE_URL="" OPENROUTER_API_KEY="" uv run harness chat
+```
+
+> Not using uv? The core still runs with plain `python` (e.g. `python -m harness.cli chat`);
+> install deps however you like — they're declared in `pyproject.toml`.
 
 ## Configuration
 
@@ -70,6 +82,8 @@ harness/
   cli.py           # init-db, chat
 schema.sql         # Postgres + pgvector DDL
 docker-compose.yml # pgvector/pgvector:pg16
+pyproject.toml     # project metadata + deps (uv); `harness` console script
+uv.lock            # pinned dependency lockfile
 demo.py            # offline end-to-end demo
 tests/test_core.py
 ```

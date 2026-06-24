@@ -21,7 +21,8 @@ def _harness(provider, **overrides):
 
 
 def test_tokenizer_monotonic():
-    assert count_tokens("") >= 1
+    # empty content is 0 with a real tokenizer, >=1 with the heuristic fallback
+    assert count_tokens("") >= 0
     assert count_tokens("a" * 400) > count_tokens("a" * 4)
     assert count_tokens({"role": "user", "content": "hi"}) >= 1
 
