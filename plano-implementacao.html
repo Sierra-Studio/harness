@@ -1,0 +1,618 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Plano de Implementação · Harness</title>
+<style>
+  :root{
+    --bg:#0c0e14;--bg-2:#11141d;--surface:#161a26;--surface-2:#1c2231;
+    --line:#262d3f;--line-2:#333c54;--txt:#e6e9f2;--txt-2:#a7afc4;--txt-3:#727a93;
+    --accent:#7c9cff;--accent-2:#5be3c0;--gold:#f5c46b;--rose:#ff7a8a;--violet:#b18cff;
+    --radius:14px;
+    --mono:"SF Mono",ui-monospace,"JetBrains Mono","Fira Code",Menlo,monospace;
+    --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Inter,Roboto,Helvetica,Arial,sans-serif;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:radial-gradient(1200px 700px at 78% -8%,#1a2138 0%,transparent 55%),radial-gradient(900px 600px at -8% 12%,#16202b 0%,transparent 50%),var(--bg);color:var(--txt);font-family:var(--sans);line-height:1.65;font-size:16px;-webkit-font-smoothing:antialiased}
+  a{color:var(--accent);text-decoration:none}a:hover{text-decoration:underline}
+  ::selection{background:rgba(124,156,255,.3)}
+  .wrap{display:grid;grid-template-columns:280px 1fr;max-width:1500px;margin:0 auto}
+  aside{position:sticky;top:0;align-self:start;height:100vh;overflow-y:auto;border-right:1px solid var(--line);padding:30px 22px;background:rgba(12,14,20,.6);backdrop-filter:blur(6px)}
+  aside .brand{font-weight:700;font-size:15px;letter-spacing:.3px;margin-bottom:4px}
+  aside .brand span{color:var(--accent-2)}
+  aside .sub{color:var(--txt-3);font-size:12.5px;margin-bottom:24px}
+  nav a{display:block;color:var(--txt-2);font-size:13.5px;padding:6px 12px;border-radius:8px;border-left:2px solid transparent;margin:1px 0}
+  nav a:hover{background:var(--surface);color:var(--txt)}
+  nav a.head{margin-top:16px;color:var(--txt-3);font-size:11px;text-transform:uppercase;letter-spacing:1.2px;padding-left:12px;border:0}
+  main{padding:0 0 120px}
+  .inner{max-width:940px;margin:0 auto;padding:0 40px}
+  header.hero{padding:80px 40px 50px;max-width:940px;margin:0 auto}
+  .kicker{display:inline-flex;align-items:center;gap:8px;font-size:12px;text-transform:uppercase;letter-spacing:2px;color:var(--accent-2);font-weight:600;margin-bottom:22px;border:1px solid var(--line-2);padding:6px 14px;border-radius:100px;background:var(--surface)}
+  h1{font-size:44px;line-height:1.1;margin:0 0 18px;letter-spacing:-1.1px;font-weight:760}
+  h1 .grad{background:linear-gradient(100deg,#7c9cff,#5be3c0 55%,#b18cff);-webkit-background-clip:text;background-clip:text;color:transparent}
+  .lead{font-size:18px;color:var(--txt-2);max-width:740px}
+  section{padding:50px 0;border-top:1px solid var(--line)}
+  section:first-of-type{border-top:0}
+  h2{font-size:28px;letter-spacing:-.5px;margin:0 0 6px;font-weight:720}
+  h2 .num{color:var(--accent);font-family:var(--mono);font-size:17px;font-weight:600;margin-right:14px;opacity:.85}
+  .h2sub{color:var(--txt-2);font-size:16px;margin:0 0 26px}
+  h3{font-size:19px;margin:34px 0 10px;letter-spacing:-.2px;font-weight:660}
+  h4{font-size:15px;margin:22px 0 8px;color:var(--txt);font-weight:640}
+  p{color:var(--txt-2)}strong{color:var(--txt)}
+  .grid{display:grid;gap:16px;margin:24px 0}
+  .g2{grid-template-columns:1fr 1fr}.g3{grid-template-columns:1fr 1fr 1fr}.g4{grid-template-columns:repeat(4,1fr)}
+  .card{background:linear-gradient(180deg,var(--surface),var(--bg-2));border:1px solid var(--line);border-radius:var(--radius);padding:20px}
+  .card.hl{border-color:var(--line-2)}
+  .card h4{margin-top:0;display:flex;align-items:center;gap:10px;font-size:15px}
+  .card p{font-size:13.5px;margin:8px 0 0;color:var(--txt-2)}
+  .ic{width:32px;height:32px;border-radius:9px;display:grid;place-items:center;font-size:16px;flex:none;background:var(--surface-2);border:1px solid var(--line-2)}
+  .tag{display:inline-block;font-family:var(--mono);font-size:11px;padding:3px 9px;border-radius:6px;background:var(--surface-2);border:1px solid var(--line-2);color:var(--txt-2);margin:3px 4px 0 0}
+  .tag.a{color:var(--accent);border-color:rgba(124,156,255,.35)}.tag.g{color:var(--accent-2);border-color:rgba(91,227,192,.3)}
+  .tag.y{color:var(--gold);border-color:rgba(245,196,107,.3)}.tag.r{color:var(--rose);border-color:rgba(255,122,138,.3)}
+  pre{background:#0a0c12;border:1px solid var(--line);border-radius:12px;padding:18px 20px;overflow-x:auto;font-family:var(--mono);font-size:12.5px;line-height:1.6;margin:18px 0;color:#cdd4e6}
+  pre .c{color:#6b7393}pre .k{color:#b18cff}pre .s{color:#5be3c0}pre .f{color:#7c9cff}pre .n{color:#f5c46b}pre .t{color:#ff9d6b}
+  code{font-family:var(--mono);font-size:.87em;background:var(--surface-2);border:1px solid var(--line);padding:2px 6px;border-radius:6px;color:#cdd4e6}
+  pre code{background:none;border:0;padding:0}
+  .callout{border:1px solid var(--line-2);border-left:3px solid var(--accent);border-radius:10px;background:var(--surface);padding:16px 20px;margin:20px 0;font-size:14px}
+  .callout.warn{border-left-color:var(--rose)}.callout.tip{border-left-color:var(--accent-2)}
+  .callout b{color:var(--txt)}
+  .callout .lbl{font-size:11px;text-transform:uppercase;letter-spacing:1.5px;font-weight:700;color:var(--accent);margin-bottom:6px;display:block}
+  .callout.warn .lbl{color:var(--rose)}.callout.tip .lbl{color:var(--accent-2)}
+  .diagram{background:linear-gradient(180deg,#0c0f17,#0a0c12);border:1px solid var(--line);border-radius:16px;padding:28px;margin:24px 0;overflow-x:auto}
+  .ascii{font-family:var(--mono);font-size:12px;line-height:1.5;color:var(--txt-2);white-space:pre;margin:0}
+  .ascii b{color:var(--accent)}.ascii .g{color:var(--accent-2)}.ascii .y{color:var(--gold)}.ascii .r{color:var(--rose)}
+  table{width:100%;border-collapse:collapse;margin:22px 0;font-size:13.5px}
+  th,td{text-align:left;padding:11px 13px;border-bottom:1px solid var(--line)}
+  th{color:var(--txt-3);font-size:11.5px;text-transform:uppercase;letter-spacing:.8px;font-weight:600}
+  td{color:var(--txt-2);vertical-align:top}td b{color:var(--txt)}
+  tr:hover td{background:rgba(255,255,255,.012)}
+  .check{list-style:none;padding:0;margin:16px 0}
+  .check li{padding:9px 0 9px 32px;position:relative;border-bottom:1px solid var(--line);color:var(--txt-2);font-size:14px}
+  .check li:before{content:"";position:absolute;left:4px;top:13px;width:15px;height:15px;border-radius:5px;border:1.5px solid var(--accent-2);background:rgba(91,227,192,.12)}
+  .check li b{color:var(--txt)}
+  ul.tight li{color:var(--txt-2);font-size:14px;margin:5px 0}
+  .step{display:grid;grid-template-columns:34px 1fr;gap:16px;padding:8px 0}
+  .step .n{width:28px;height:28px;border-radius:8px;display:grid;place-items:center;font-family:var(--mono);font-weight:700;font-size:13px;background:var(--surface-2);border:1px solid var(--line-2);color:var(--accent-2)}
+  .phase{border:1px solid var(--line);border-radius:14px;padding:4px 22px 18px;margin:16px 0;background:linear-gradient(180deg,var(--surface),transparent)}
+  .phase .ph{display:inline-block;font-family:var(--mono);font-size:11px;font-weight:700;letter-spacing:1px;color:var(--gold);text-transform:uppercase;margin:16px 0 0}
+  .decisions{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:22px 0}
+  .dec{display:flex;gap:12px;align-items:flex-start;background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:12px 14px;font-size:13.5px}
+  .dec .k{color:var(--accent-2);font-weight:600;flex:none}
+  footer{max-width:940px;margin:0 auto;padding:40px;color:var(--txt-3);font-size:13px;border-top:1px solid var(--line)}
+  @media(max-width:1000px){.wrap{grid-template-columns:1fr}aside{display:none}.g2,.g3,.g4,.decisions{grid-template-columns:1fr}h1{font-size:34px}.inner,header.hero{padding-left:24px;padding-right:24px}}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<aside>
+  <div class="brand">Harness<span>Engine</span></div>
+  <div class="sub">Plano de implementação · v1.0</div>
+  <nav>
+    <a href="#overview">Visão geral</a>
+    <a href="#decisoes">Decisões travadas</a>
+    <a class="head">Arquitetura</a>
+    <a href="#arquitetura">Mapa de componentes</a>
+    <a href="#dados">Modelo de dados (Postgres)</a>
+    <a class="head">Componentes</a>
+    <a href="#provider">Provider · OpenRouter</a>
+    <a href="#loop">Loop de execução</a>
+    <a href="#memory">Memory</a>
+    <a href="#tools">Tools & MCP</a>
+    <a href="#skills">Skills</a>
+    <a href="#observ">Observabilidade</a>
+    <a class="head">Entrega</a>
+    <a href="#roadmap">Roadmap em fases</a>
+    <a href="#checklist">Checklist</a>
+  </nav>
+</aside>
+
+<main>
+<header class="hero">
+  <div class="kicker">● Plano de Implementação do Harness</div>
+  <h1>Harness com <span class="grad">Memory, Skills, MCP, Tools & Loop</span> sobre OpenRouter</h1>
+  <p class="lead">Plano técnico de implementação para um harness multi-tenant com gestão de janela de contexto baseada em orçamento de tokens, sumarização encadeada, checkpoints de assunto, tools indexadas via MCP, skills por usuário com indução automática e observabilidade de tokens por turn. Foco na lógica do harness; o Bash executa atrás de uma interface <code>SandboxBackend</code> plugável.</p>
+</header>
+
+<div class="inner">
+
+<!-- ===================== OVERVIEW ===================== -->
+<section id="overview">
+  <h2><span class="num">00</span>Visão geral</h2>
+  <p class="h2sub">Sete blocos, um banco. Cada turn é uma mensagem; cada mensagem registra tokens; cada decisão fica gravada no Postgres.</p>
+
+  <div class="grid g4">
+    <div class="card"><h4><span class="ic">🔁</span>Loop</h4><p>Ciclo agêntico com controle de orçamento de tokens por session.</p></div>
+    <div class="card"><h4><span class="ic">🧠</span>Memory</h4><p>Janela = contexto − system prompt; summary encadeado ao atingir o teto.</p></div>
+    <div class="card"><h4><span class="ic">🛠️</span>Tools</h4><p>Built-in + Index Tools (MCP) descobertas por busca, não no prompt.</p></div>
+    <div class="card"><h4><span class="ic">📦</span>Skills</h4><p>Por usuário no DB; indução automática a cada 10 sessions.</p></div>
+    <div class="card"><h4><span class="ic">🔌</span>MCP</h4><p>Servidores MCP alimentam o índice de tools, não o system prompt.</p></div>
+    <div class="card"><h4><span class="ic">🌐</span>Provider</h4><p>OpenRouter: metadata de modelo + chat completions + tool calling.</p></div>
+    <div class="card"><h4><span class="ic">📊</span>Observabilidade</h4><p>Todo step logado; <code>tokens_in</code>/<code>tokens_out</code> por turn.</p></div>
+    <div class="card hl"><h4><span class="ic">🗄️</span>Postgres</h4><p>Substrato único: turns, sessions, summaries, checkpoints, skills, tool index.</p></div>
+  </div>
+</section>
+
+<!-- ===================== DECISÕES ===================== -->
+<section id="decisoes">
+  <h2><span class="num">01</span>Decisões travadas</h2>
+  <p class="h2sub">Premissas confirmadas que guiam todo o plano.</p>
+  <div class="decisions">
+    <div class="dec"><span class="k">Turn</span><span>Uma mensagem com <code>role</code> (<code>user</code>/<code>system</code>/<code>assistant</code>/<code>tool</code>). Cada turn grava tokens de entrada e saída.</span></div>
+    <div class="dec"><span class="k">Session</span><span>Janela explícita de início e fim. A cada <b>10 sessions</b> do usuário, roda a indução de skills.</span></div>
+    <div class="dec"><span class="k">Checkpoint</span><span>A cada <b>20 turns de role <code>user</code></b>, classifica o assunto anterior em poucas palavras.</span></div>
+    <div class="dec"><span class="k">Memory</span><span>Orçamento = janela do modelo − system prompt. Memory = mensagens + summaries.</span></div>
+    <div class="dec"><span class="k">Summary</span><span>Ao atingir o teto: copia as 10% últimas mensagens, gera summary encadeado de todo o resto. Janela = system + summary + 10%.</span></div>
+    <div class="dec"><span class="k">Limite tokens</span><span>Teto por <b>session</b>. Ao atingir, o loop <b>para e retorna a resposta parcial</b>.</span></div>
+    <div class="dec"><span class="k">Tools</span><span>Built-in (<code>GetTools</code>, <code>SearchTools</code>, <code>GetSkills</code>, <code>Bash</code>) + Index Tools via MCP, buscadas sob demanda.</span></div>
+    <div class="dec"><span class="k">Provider</span><span>OpenRouter. Stack <b>Python</b>. Persistência em <b>Postgres</b>. <code>Bash</code> atrás de <code>SandboxBackend</code> plugável.</span></div>
+  </div>
+</section>
+
+<!-- ===================== ARQUITETURA ===================== -->
+<section id="arquitetura">
+  <h2><span class="num">02</span>Mapa de componentes</h2>
+  <p class="h2sub">O loop é o coração; tudo conversa com o Postgres e com o provider via contratos estáveis.</p>
+
+  <div class="diagram">
+<pre class="ascii">                       ┌──────────────────────────────────────────────┐
+   usuário ───────────▶│              <b>HARNESS RUNTIME</b>                  │
+                       │                                              │
+                       │   ┌────────────────────────────────────┐     │
+                       │   │           <b>AGENT LOOP</b>                 │     │
+                       │   │  build context → call model → parse  │     │
+                       │   │  → exec tool → append turn → repeat  │     │
+                       │   │  ⤷ guard de orçamento de tokens      │     │
+                       │   └───┬─────────┬─────────┬─────────┬────┘     │
+                       │       │         │         │         │          │
+                       │   <span class="g">Memory</span>     <span class="g">Tools</span>     <span class="g">Skills</span>    <span class="y">Observer</span>      │
+                       │   janela/    built-in/  por user/  log step/   │
+                       │   summary    index+MCP  indução    tokens      │
+                       │       │         │         │         │          │
+                       └───────┼─────────┼─────────┼─────────┼──────────┘
+                               │         │         │         │
+              ┌────────────────┴────┐    │    ┌────┴─────────┴──────┐
+              ▼                     ▼    ▼    ▼                     ▼
+        ┌───────────┐        ┌───────────────┐            ┌────────────────┐
+        │ <b>OpenRouter</b> │        │ <b>SandboxBackend</b>│            │   <b>POSTGRES</b>     │
+        │ models/ +  │        │ (Bash, plugá- │            │ turns·sessions │
+        │ chat compl.│        │  vel; isolado)│            │ summaries·     │
+        └───────────┘        └───────────────┘            │ checkpoints·   │
+                                                          │ skills·tools   │
+                              MCP servers ───▶ tool index │ usage          │
+                                                          └────────────────┘</pre>
+  </div>
+</section>
+
+<!-- ===================== DADOS ===================== -->
+<section id="dados">
+  <h2><span class="num">03</span>Modelo de dados (Postgres)</h2>
+  <p class="h2sub">Esquema mínimo que sustenta memory, checkpoints, skills, tool index e contabilidade de tokens. Multi-tenant por <code>user_id</code> em todas as tabelas.</p>
+
+<pre><span class="k">CREATE TABLE</span> users (
+  id            <span class="t">uuid</span> <span class="k">PRIMARY KEY</span> <span class="k">DEFAULT</span> gen_random_uuid(),
+  external_id   <span class="t">text</span> <span class="k">UNIQUE</span> <span class="k">NOT NULL</span>,
+  created_at    <span class="t">timestamptz</span> <span class="k">DEFAULT</span> now()
+);
+
+<span class="k">CREATE TABLE</span> sessions (
+  id            <span class="t">uuid</span> <span class="k">PRIMARY KEY</span> <span class="k">DEFAULT</span> gen_random_uuid(),
+  user_id       <span class="t">uuid</span> <span class="k">REFERENCES</span> users(id),
+  model         <span class="t">text</span> <span class="k">NOT NULL</span>,              <span class="c">-- slug OpenRouter, ex. "anthropic/claude-..."</span>
+  context_window <span class="t">int</span> <span class="k">NOT NULL</span>,             <span class="c">-- vindo do metadata do modelo</span>
+  token_budget  <span class="t">int</span> <span class="k">NOT NULL</span>,               <span class="c">-- teto de gasto por session</span>
+  tokens_spent  <span class="t">int</span> <span class="k">DEFAULT</span> <span class="n">0</span>,               <span class="c">-- acumulado in+out</span>
+  status        <span class="t">text</span> <span class="k">DEFAULT</span> <span class="s">'open'</span>,         <span class="c">-- open | closed | budget_exhausted</span>
+  started_at    <span class="t">timestamptz</span> <span class="k">DEFAULT</span> now(),
+  ended_at      <span class="t">timestamptz</span>
+);
+
+<span class="c">-- cada TURN é uma mensagem; é a unidade central da memory</span>
+<span class="k">CREATE TABLE</span> turns (
+  id            <span class="t">uuid</span> <span class="k">PRIMARY KEY</span> <span class="k">DEFAULT</span> gen_random_uuid(),
+  session_id    <span class="t">uuid</span> <span class="k">REFERENCES</span> sessions(id),
+  user_id       <span class="t">uuid</span> <span class="k">REFERENCES</span> users(id),
+  idx           <span class="t">int</span> <span class="k">NOT NULL</span>,               <span class="c">-- ordem dentro da session</span>
+  role          <span class="t">text</span> <span class="k">NOT NULL</span>,              <span class="c">-- user | system | assistant | tool</span>
+  content       <span class="t">jsonb</span> <span class="k">NOT NULL</span>,             <span class="c">-- texto e/ou tool_calls / tool_result</span>
+  token_count   <span class="t">int</span> <span class="k">NOT NULL</span>,               <span class="c">-- custo do conteúdo desta mensagem</span>
+  tokens_in     <span class="t">int</span>,                          <span class="c">-- prompt tokens (em turns gerados pelo modelo)</span>
+  tokens_out    <span class="t">int</span>,                          <span class="c">-- completion tokens</span>
+  in_window     <span class="t">bool</span> <span class="k">DEFAULT</span> true,            <span class="c">-- ainda na janela ativa? (false após sumarizar)</span>
+  created_at    <span class="t">timestamptz</span> <span class="k">DEFAULT</span> now()
+);
+
+<span class="c">-- summaries encadeados: cada um engloba o anterior + as mensagens evictadas</span>
+<span class="k">CREATE TABLE</span> summaries (
+  id            <span class="t">uuid</span> <span class="k">PRIMARY KEY</span> <span class="k">DEFAULT</span> gen_random_uuid(),
+  session_id    <span class="t">uuid</span> <span class="k">REFERENCES</span> sessions(id),
+  parent_id     <span class="t">uuid</span> <span class="k">REFERENCES</span> summaries(id),  <span class="c">-- encadeamento</span>
+  content       <span class="t">text</span> <span class="k">NOT NULL</span>,
+  token_count   <span class="t">int</span> <span class="k">NOT NULL</span>,
+  covers_until  <span class="t">int</span> <span class="k">NOT NULL</span>,              <span class="c">-- maior turn.idx coberto</span>
+  created_at    <span class="t">timestamptz</span> <span class="k">DEFAULT</span> now()
+);
+
+<span class="c">-- checkpoint: classificação de assunto a cada 20 turns de user</span>
+<span class="k">CREATE TABLE</span> checkpoints (
+  id            <span class="t">uuid</span> <span class="k">PRIMARY KEY</span> <span class="k">DEFAULT</span> gen_random_uuid(),
+  session_id    <span class="t">uuid</span> <span class="k">REFERENCES</span> sessions(id),
+  user_id       <span class="t">uuid</span> <span class="k">REFERENCES</span> users(id),
+  at_user_turn  <span class="t">int</span> <span class="k">NOT NULL</span>,              <span class="c">-- 20, 40, 60...</span>
+  label         <span class="t">text</span> <span class="k">NOT NULL</span>,              <span class="c">-- "poucas palavras" do assunto</span>
+  created_at    <span class="t">timestamptz</span> <span class="k">DEFAULT</span> now()
+);
+
+<span class="c">-- skills por usuário (autoradas ou induzidas)</span>
+<span class="k">CREATE TABLE</span> skills (
+  id            <span class="t">uuid</span> <span class="k">PRIMARY KEY</span> <span class="k">DEFAULT</span> gen_random_uuid(),
+  user_id       <span class="t">uuid</span> <span class="k">REFERENCES</span> users(id),
+  name          <span class="t">text</span> <span class="k">NOT NULL</span>,
+  summary       <span class="t">text</span> <span class="k">NOT NULL</span>,             <span class="c">-- 1 linha p/ GetSkills / progressive disclosure</span>
+  body          <span class="t">text</span> <span class="k">NOT NULL</span>,             <span class="c">-- procedimento completo (carregado sob demanda)</span>
+  origin        <span class="t">text</span> <span class="k">DEFAULT</span> <span class="s">'induced'</span>,     <span class="c">-- authored | induced</span>
+  embedding     <span class="t">vector</span>(<span class="n">1536</span>),               <span class="c">-- busca semântica (pgvector)</span>
+  created_at    <span class="t">timestamptz</span> <span class="k">DEFAULT</span> now()
+);
+
+<span class="c">-- índice de Index Tools (vindas de MCP) — NÃO entram no system prompt</span>
+<span class="k">CREATE TABLE</span> tool_index (
+  id            <span class="t">uuid</span> <span class="k">PRIMARY KEY</span> <span class="k">DEFAULT</span> gen_random_uuid(),
+  mcp_server    <span class="t">text</span> <span class="k">NOT NULL</span>,
+  name          <span class="t">text</span> <span class="k">NOT NULL</span>,
+  description   <span class="t">text</span> <span class="k">NOT NULL</span>,
+  input_schema  <span class="t">jsonb</span> <span class="k">NOT NULL</span>,
+  embedding     <span class="t">vector</span>(<span class="n">1536</span>),               <span class="c">-- SearchTools busca aqui</span>
+  enabled       <span class="t">bool</span> <span class="k">DEFAULT</span> true
+);
+
+<span class="c">-- log de observabilidade: um registro por step do loop</span>
+<span class="k">CREATE TABLE</span> step_logs (
+  id            <span class="t">uuid</span> <span class="k">PRIMARY KEY</span> <span class="k">DEFAULT</span> gen_random_uuid(),
+  session_id    <span class="t">uuid</span> <span class="k">REFERENCES</span> sessions(id),
+  turn_id       <span class="t">uuid</span> <span class="k">REFERENCES</span> turns(id),
+  step_type     <span class="t">text</span> <span class="k">NOT NULL</span>,              <span class="c">-- model_call | tool_call | summarize | checkpoint</span>
+  detail        <span class="t">jsonb</span>,
+  tokens_in     <span class="t">int</span>, tokens_out <span class="t">int</span>,
+  latency_ms    <span class="t">int</span>,
+  created_at    <span class="t">timestamptz</span> <span class="k">DEFAULT</span> now()
+);</pre>
+</section>
+
+<!-- ===================== PROVIDER ===================== -->
+<section id="provider">
+  <h2><span class="num">04</span>Provider · OpenRouter</h2>
+  <p class="h2sub">OpenRouter dá três coisas que o harness precisa: o tamanho da janela de contexto por modelo, o endpoint de chat completions com tool calling, e o <code>usage</code> com tokens de entrada/saída por chamada.</p>
+
+  <h3>1 · Metadata do modelo (janela de contexto)</h3>
+  <p>No início da session, buscamos <code>GET /api/v1/models</code> e lemos o <code>context_length</code> do modelo escolhido. Esse valor alimenta <code>sessions.context_window</code> e é a base do orçamento de memory.</p>
+
+  <h3>2 · Chat completions + tool calling</h3>
+<pre><span class="k">class</span> <span class="f">OpenRouterProvider</span>:
+    <span class="k">def</span> <span class="f">model_context_window</span>(self, model: str) -> int:
+        <span class="c"># cacheado por session; fonte: /api/v1/models -> context_length</span>
+        <span class="k">return</span> self._models[model][<span class="s">"context_length"</span>]
+
+    <span class="k">def</span> <span class="f">complete</span>(self, model, messages, tools) -> <span class="f">ModelResult</span>:
+        r = httpx.<span class="f">post</span>(<span class="s">"https://openrouter.ai/api/v1/chat/completions"</span>,
+            headers={<span class="s">"Authorization"</span>: <span class="s">f"Bearer {API_KEY}"</span>},
+            json={<span class="s">"model"</span>: model, <span class="s">"messages"</span>: messages,
+                  <span class="s">"tools"</span>: tools, <span class="s">"tool_choice"</span>: <span class="s">"auto"</span>})
+        d = r.<span class="f">json</span>()
+        <span class="k">return</span> <span class="f">ModelResult</span>(
+            message    = d[<span class="s">"choices"</span>][<span class="n">0</span>][<span class="s">"message"</span>],
+            tokens_in  = d[<span class="s">"usage"</span>][<span class="s">"prompt_tokens"</span>],      <span class="c"># grava no turn</span>
+            tokens_out = d[<span class="s">"usage"</span>][<span class="s">"completion_tokens"</span>])</pre>
+
+  <div class="callout tip">
+    <span class="lbl">Contabilidade de tokens — fonte da verdade</span>
+    Use sempre o <code>usage</code> retornado pelo OpenRouter para gravar <code>tokens_in</code>/<code>tokens_out</code> no turn — é o número real cobrado. Para <em>estimar</em> antes da chamada (ex.: caber na janela), use um tokenizer local (<code>tiktoken</code> ou o do modelo) só como aproximação de <code>token_count</code>.
+  </div>
+</section>
+
+<!-- ===================== LOOP ===================== -->
+<section id="loop">
+  <h2><span class="num">05</span>Loop de execução</h2>
+  <p class="h2sub">Ciclo agêntico com <em>guard</em> de orçamento de tokens por session. Ao estourar o teto, para e devolve o que tiver.</p>
+
+  <div class="step"><div class="n">1</div><div><b>Recebe a mensagem do usuário</b> → grava turn <code>role=user</code> (incrementa contador de user-turns para checkpoint).</div></div>
+  <div class="step"><div class="n">2</div><div><b>Monta o contexto</b> via Memory: <code>system prompt + summary + janela de turns ativos</code>, sempre dentro do orçamento.</div></div>
+  <div class="step"><div class="n">3</div><div><b>Chama o modelo</b> (OpenRouter). Grava turn <code>role=assistant</code> com <code>tokens_in/out</code>; soma em <code>sessions.tokens_spent</code>.</div></div>
+  <div class="step"><div class="n">4</div><div><b>Tem tool call?</b> Executa a tool (built-in ou Index Tool), grava turn <code>role=tool</code> e volta ao passo 2.</div></div>
+  <div class="step"><div class="n">5</div><div><b>Sem tool call</b> → resposta final ao usuário. Encerra o turn.</div></div>
+  <div class="step"><div class="n">6</div><div><b>Guards a cada iteração:</b> orçamento de tokens, teto de iterações, gatilho de summary e gatilho de checkpoint.</div></div>
+
+<pre><span class="k">def</span> <span class="f">run_turn</span>(session, user_msg):
+    memory.<span class="f">append</span>(session, role=<span class="s">"user"</span>, content=user_msg)
+    memory.<span class="f">maybe_checkpoint</span>(session)        <span class="c"># a cada 20 user-turns</span>
+
+    <span class="k">for</span> step <span class="k">in</span> range(MAX_STEPS):
+        <span class="c"># --- GUARD de orçamento: para e retorna parcial ---</span>
+        <span class="k">if</span> session.tokens_spent >= session.token_budget:
+            session.status = <span class="s">"budget_exhausted"</span>
+            <span class="k">return</span> <span class="f">PartialResult</span>(memory.<span class="f">last_assistant_text</span>(session),
+                                 reason=<span class="s">"token_budget"</span>)
+
+        ctx = memory.<span class="f">build_window</span>(session)     <span class="c"># system + summary + turns ativos</span>
+        res = provider.<span class="f">complete</span>(session.model, ctx, tools.<span class="f">builtins</span>())
+
+        turn = memory.<span class="f">append</span>(session, role=<span class="s">"assistant"</span>,
+                            content=res.message,
+                            tokens_in=res.tokens_in, tokens_out=res.tokens_out)
+        session.tokens_spent += res.tokens_in + res.tokens_out
+        observer.<span class="f">log</span>(session, turn, <span class="s">"model_call"</span>, res)
+
+        memory.<span class="f">maybe_summarize</span>(session)       <span class="c"># se janela > orçamento de memory</span>
+
+        <span class="k">if</span> <span class="k">not</span> res.message.tool_calls:
+            <span class="k">return</span> <span class="f">FinalResult</span>(res.message.content)
+
+        <span class="k">for</span> call <span class="k">in</span> res.message.tool_calls:
+            out = tools.<span class="f">dispatch</span>(session, call)    <span class="c"># builtin OU index tool</span>
+            memory.<span class="f">append</span>(session, role=<span class="s">"tool"</span>, content=out)
+            observer.<span class="f">log</span>(session, turn, <span class="s">"tool_call"</span>, out)</pre>
+
+  <div class="callout warn">
+    <span class="lbl">Reserva de saída</span>
+    Sua regra é <code>memory = janela − system prompt</code>. Na prática, reserve também espaço para a <b>resposta</b> do modelo: <code>orçamento_memory = context_window − system_prompt − reserva_resposta</code>. Sem isso, um contexto cheio não deixa tokens para o modelo responder. Sugiro <code>reserva_resposta</code> configurável (ex.: 2.000–4.000 tokens).
+  </div>
+</section>
+
+<!-- ===================== MEMORY ===================== -->
+<section id="memory">
+  <h2><span class="num">06</span>Memory</h2>
+  <p class="h2sub">A janela é dirigida por orçamento de tokens. Quando enche, sumariza encadeado e mantém só as 10% mensagens mais recentes verbatim. O histórico completo nunca se perde — fica no Postgres.</p>
+
+  <h3>O cálculo do orçamento</h3>
+<pre><span class="c"># no início da session</span>
+context_window   = provider.<span class="f">model_context_window</span>(model)   <span class="c"># ex. 200_000</span>
+system_tokens    = count_tokens(system_prompt)
+memory_budget    = context_window - system_tokens - response_reserve
+
+<span class="c"># janela ativa atual (o que será enviado ao modelo)</span>
+window_tokens    = summary.token_count + sum(t.token_count
+                       <span class="k">for</span> t <span class="k">in</span> active_turns)   <span class="c"># turns com in_window=true</span></pre>
+
+  <h3>Gatilho de sumarização</h3>
+  <p>Quando <code>window_tokens ≥ memory_budget</code>, dispara o procedimento:</p>
+  <div class="step"><div class="n">1</div><div><b>Copia as 10% últimas mensagens</b> (<code>keep = ceil(0.10 × nº de turns ativos)</code>). Elas permanecem na janela, verbatim.</div></div>
+  <div class="step"><div class="n">2</div><div><b>Gera um summary encadeado</b> de todo o memory (exceto system prompt): inclui o <code>summary anterior</code> + todos os turns que sairão da janela.</div></div>
+  <div class="step"><div class="n">3</div><div><b>Marca os turns sumarizados</b> com <code>in_window=false</code> (continuam no DB, fora da janela ativa).</div></div>
+  <div class="step"><div class="n">4</div><div><b>Nova janela</b> = <code>system prompt + summary + 10% recentes</code>.</div></div>
+
+<pre><span class="k">def</span> <span class="f">maybe_summarize</span>(session):
+    active = turns_in_window(session)
+    window = current_summary_tokens(session) + sum(t.token_count <span class="k">for</span> t <span class="k">in</span> active)
+    <span class="k">if</span> window < session.memory_budget:
+        <span class="k">return</span>
+
+    keep_n   = ceil(<span class="n">0.10</span> * len(active))
+    keep     = active[-keep_n:]                 <span class="c"># 10% recentes ficam verbatim</span>
+    to_fold  = active[:-keep_n]                 <span class="c"># o resto é sumarizado</span>
+
+    prev     = current_summary(session)         <span class="c"># encadeamento</span>
+    new_text = provider.<span class="f">summarize</span>(prev_summary=prev, messages=to_fold)
+
+    summaries.<span class="f">insert</span>(session, parent=prev, content=new_text,
+                     covers_until=to_fold[-1].idx)
+    mark_out_of_window(to_fold)                 <span class="c"># in_window=false (continuam no DB)</span>
+    observer.<span class="f">log</span>(session, None, <span class="s">"summarize"</span>, {<span class="s">"folded"</span>: len(to_fold)})</pre>
+
+  <h3>Checkpoints de assunto</h3>
+  <p>Contamos turns de role <code>user</code>. A cada 20, classificamos em poucas palavras o assunto tratado desde o checkpoint anterior — uma trilha navegável da session, barata em tokens.</p>
+<pre><span class="k">def</span> <span class="f">maybe_checkpoint</span>(session):
+    n = count_user_turns(session)
+    <span class="k">if</span> n > <span class="n">0</span> <span class="k">and</span> n % <span class="n">20</span> == <span class="n">0</span>:
+        recent = user_turns_since_last_checkpoint(session)
+        label  = provider.<span class="f">classify_subject</span>(recent)   <span class="c"># "poucas palavras"</span>
+        checkpoints.<span class="f">insert</span>(session, at_user_turn=n, label=label)
+        observer.<span class="f">log</span>(session, None, <span class="s">"checkpoint"</span>, {<span class="s">"label"</span>: label})</pre>
+
+  <div class="callout tip">
+    <span class="lbl">Por que isto funciona</span>
+    O DB é a fonte autoritativa do histórico (todos os turns, com <code>in_window</code>). A <b>janela ativa</b> é só uma projeção dentro do orçamento. Sumarizar não apaga nada: transforma "lembrar tudo" em "reconhecer um resumo + o presente recente" — exatamente a transformação de <em>recall → retrieval</em> do artigo de referência.
+  </div>
+</section>
+
+<!-- ===================== TOOLS ===================== -->
+<section id="tools">
+  <h2><span class="num">07</span>Tools & MCP</h2>
+  <p class="h2sub">Duas estratégias juntas. As <b>built-in</b> ficam sempre no system prompt (são poucas). As <b>Index Tools</b> (de MCP) podem ser milhares — ficam num índice buscável e só entram no contexto quando o agente as procura.</p>
+
+  <div class="grid g2">
+    <div class="card hl">
+      <h4><span class="ic">🧱</span>Built-in tools (sempre no prompt)</h4>
+      <p style="margin-top:12px"><span class="tag a">GetTools</span> retorna o schema completo de uma tool específica do índice.<br>
+      <span class="tag a">SearchTools</span> busca semântica no índice de Index Tools por descrição da necessidade.<br>
+      <span class="tag a">GetSkills</span> lista/recupera skills do usuário (progressive disclosure).<br>
+      <span class="tag a">Bash</span> executa comandos atrás do <code>SandboxBackend</code> plugável.</p>
+    </div>
+    <div class="card">
+      <h4><span class="ic">🔌</span>Index Tools (via MCP)</h4>
+      <p style="margin-top:12px">Cada servidor MCP conectado tem suas tools registradas em <code>tool_index</code> (nome, descrição, schema, embedding). <b>Nenhuma</b> entra no system prompt por padrão — isso preservaria zero espaço para a memory. O agente as descobre por <code>SearchTools</code> e carrega o schema por <code>GetTools</code> só quando precisa.</p>
+    </div>
+  </div>
+
+  <h3>Fluxo de descoberta → uso</h3>
+  <div class="diagram">
+<pre class="ascii"> modelo precisa de uma capacidade que não tem no prompt
+        │
+        ▼
+  <b>SearchTools</b>("enviar email para cliente")
+        │   busca vetorial em tool_index
+        ▼
+  retorna top-k: [{name, description}, ...]   ← barato (só resumos)
+        │
+        ▼
+  <b>GetTools</b>("gmail.send")  → schema completo da tool
+        │
+        ▼
+  modelo emite tool_call ─▶ <b>dispatch</b> ─▶ MCP server ─▶ resultado
+        │
+        ▼
+  resultado normalizado vira turn role=tool na memory</pre>
+  </div>
+
+<pre><span class="k">class</span> <span class="f">ToolRegistry</span>:
+    BUILTINS = [<span class="s">"GetTools"</span>, <span class="s">"SearchTools"</span>, <span class="s">"GetSkills"</span>, <span class="s">"Bash"</span>]
+
+    <span class="k">def</span> <span class="f">builtins</span>(self) -> list:  <span class="c"># só estas vão ao system prompt</span>
+        <span class="k">return</span> [self._spec(n) <span class="k">for</span> n <span class="k">in</span> self.BUILTINS]
+
+    <span class="k">def</span> <span class="f">search_tools</span>(self, query, k=<span class="n">8</span>):
+        emb = embed(query)
+        <span class="k">return</span> db.<span class="f">query</span>(<span class="s">"""SELECT name, description FROM tool_index
+                            WHERE enabled ORDER BY embedding <=> %s LIMIT %s"""</span>,
+                         [emb, k])
+
+    <span class="k">def</span> <span class="f">dispatch</span>(self, session, call):
+        <span class="k">if</span> call.name <span class="k">in</span> self.BUILTINS:
+            <span class="k">return</span> self.<span class="f">_run_builtin</span>(session, call)
+        <span class="k">return</span> mcp.<span class="f">invoke</span>(call.name, call.arguments)   <span class="c"># Index Tool via MCP</span></pre>
+
+  <div class="callout">
+    <span class="lbl">A economia de contexto</span>
+    Com N tools de MCP, o custo no prompt é <b>O(1)</b> (só as 4 built-ins), não O(N). O agente "paga" tokens de descrição de tool apenas pelas que efetivamente busca — preservando o orçamento para a memory.
+  </div>
+</section>
+
+<!-- ===================== SKILLS ===================== -->
+<section id="skills">
+  <h2><span class="num">08</span>Skills</h2>
+  <p class="h2sub">Skills pertencem ao usuário e vivem no Postgres. Além das autoradas, o harness induz skills novas observando padrões nos pedidos — a cada 10 sessions.</p>
+
+  <h3>Acesso em runtime</h3>
+  <p>O agente descobre skills via a built-in <code>GetSkills</code> (progressive disclosure: primeiro os <code>summary</code> de uma linha; o <code>body</code> completo só é carregado quando a skill é escolhida). Busca semântica por <code>embedding</code> quando o usuário tem muitas skills.</p>
+
+  <h3>Indução automática (a cada 10 sessions)</h3>
+  <p>Quando o usuário fecha sua 10ª, 20ª, 30ª… session, dispara um job (assíncrono) que analisa o histórico de pedidos e procura padrões recorrentes que valham virar skill.</p>
+
+  <div class="step"><div class="n">1</div><div><b>Gatilho:</b> ao fechar uma session, <code>count_closed_sessions(user) % 10 == 0</code>.</div></div>
+  <div class="step"><div class="n">2</div><div><b>Coleta:</b> reúne sinais baratos — turns <code>role=user</code>, labels de <code>checkpoints</code> e summaries das últimas sessions.</div></div>
+  <div class="step"><div class="n">3</div><div><b>Detecção:</b> uma chamada ao modelo identifica padrões repetidos que poderiam virar procedimento reutilizável.</div></div>
+  <div class="step"><div class="n">4</div><div><b>Persistência:</b> se encontrar, insere uma nova skill com <code>origin='induced'</code> para o usuário (dedup por similaridade de embedding com as existentes).</div></div>
+
+<pre><span class="k">def</span> <span class="f">on_session_closed</span>(session):
+    user = session.user_id
+    <span class="k">if</span> count_closed_sessions(user) % <span class="n">10</span> != <span class="n">0</span>:
+        <span class="k">return</span>
+
+    signals = gather_recent_requests(user)        <span class="c"># user-turns + checkpoints + summaries</span>
+    found   = provider.<span class="f">induce_skills</span>(signals)     <span class="c"># -> [] ou [SkillDraft, ...]</span>
+
+    <span class="k">for</span> draft <span class="k">in</span> found:
+        <span class="k">if</span> <span class="k">not</span> is_duplicate(user, draft.embedding):  <span class="c"># evita repetir skill existente</span>
+            skills.<span class="f">insert</span>(user_id=user, name=draft.name,
+                          summary=draft.summary, body=draft.body,
+                          origin=<span class="s">"induced"</span>, embedding=draft.embedding)
+            observer.<span class="f">log</span>(session, None, <span class="s">"skill_induced"</span>, {<span class="s">"name"</span>: draft.name})</pre>
+
+  <div class="callout tip">
+    <span class="lbl">Custo controlado</span>
+    A indução roda 1× a cada 10 sessions, fora do caminho crítico do loop (assíncrona). Alimentá-la com <b>checkpoints</b> e <b>summaries</b> (já comprimidos) em vez do histórico bruto mantém a chamada barata em tokens.
+  </div>
+</section>
+
+<!-- ===================== OBSERVABILIDADE ===================== -->
+<section id="observ">
+  <h2><span class="num">09</span>Observabilidade</h2>
+  <p class="h2sub">Todo step do loop é logado; cada turn carrega o consumo real de tokens. Token-spend é cidadão de primeira classe.</p>
+
+  <div class="grid g2">
+    <div class="card"><h4><span class="ic">📝</span>Log por step</h4><p>Um registro em <code>step_logs</code> para cada <code>model_call</code>, <code>tool_call</code>, <code>summarize</code> e <code>checkpoint</code> — com <code>detail</code>, <code>latency_ms</code> e tokens.</p></div>
+    <div class="card"><h4><span class="ic">🔢</span>Tokens no turn</h4><p><code>tokens_in</code>/<code>tokens_out</code> gravados em cada turn gerado pelo modelo (fonte: <code>usage</code> do OpenRouter); <code>token_count</code> em todos.</p></div>
+    <div class="card"><h4><span class="ic">📈</span>Agregados por session</h4><p><code>sessions.tokens_spent</code> mantém o acumulado vivo — é o que o guard do loop consulta para parar no teto.</p></div>
+    <div class="card"><h4><span class="ic">🔍</span>Trilha auditável</h4><p>Com <code>step_logs</code> + <code>turns</code> + <code>checkpoints</code>, qualquer session é reconstruível passo a passo para debug e custo.</p></div>
+  </div>
+
+  <p>Métricas derivadas direto do SQL: tokens por turn, por session e por usuário; custo médio por resposta; número de sumarizações; latência por tipo de step.</p>
+<pre><span class="c">-- gasto de tokens por usuário no mês</span>
+<span class="k">SELECT</span> u.external_id,
+       <span class="f">SUM</span>(t.tokens_in)  <span class="k">AS</span> input,
+       <span class="f">SUM</span>(t.tokens_out) <span class="k">AS</span> output
+<span class="k">FROM</span> turns t <span class="k">JOIN</span> users u <span class="k">ON</span> u.id = t.user_id
+<span class="k">WHERE</span> t.created_at >= date_trunc(<span class="s">'month'</span>, now())
+<span class="k">GROUP BY</span> u.external_id <span class="k">ORDER BY</span> output <span class="k">DESC</span>;</pre>
+</section>
+
+<!-- ===================== ROADMAP ===================== -->
+<section id="roadmap">
+  <h2><span class="num">10</span>Roadmap em fases</h2>
+  <p class="h2sub">Cada fase entrega algo executável. As fases 1–3 já dão um harness funcional; 4–6 adicionam a inteligência de memory/skills.</p>
+
+  <div class="phase">
+    <span class="ph">Fase 1 · Fundação</span>
+    <ul class="tight">
+      <li>Esquema Postgres (tabelas acima) + migrações; habilitar <code>pgvector</code>.</li>
+      <li><code>OpenRouterProvider</code>: metadata de modelo, <code>complete()</code>, captura de <code>usage</code>.</li>
+      <li>Modelo de <code>session</code>/<code>turn</code> com gravação de tokens.</li>
+    </ul>
+  </div>
+  <div class="phase">
+    <span class="ph">Fase 2 · Loop mínimo</span>
+    <ul class="tight">
+      <li>Loop perceber→chamar→parsear→responder com built-in <code>Bash</code> atrás de <code>SandboxBackend</code> (impl. trivial p/ começar).</li>
+      <li>Guard de orçamento por session: parar e retornar parcial.</li>
+      <li>Observer gravando <code>step_logs</code>.</li>
+    </ul>
+  </div>
+  <div class="phase">
+    <span class="ph">Fase 3 · Tools & MCP</span>
+    <ul class="tight">
+      <li>Cliente MCP + ingestão de tools no <code>tool_index</code> (com embeddings).</li>
+      <li>Built-ins <code>SearchTools</code> e <code>GetTools</code>; <code>dispatch</code> para Index Tools.</li>
+    </ul>
+  </div>
+  <div class="phase">
+    <span class="ph">Fase 4 · Memory completa</span>
+    <ul class="tight">
+      <li>Orçamento de memory, <code>build_window</code>, <code>maybe_summarize</code> (encadeado + 10% verbatim).</li>
+      <li><code>maybe_checkpoint</code> a cada 20 user-turns.</li>
+    </ul>
+  </div>
+  <div class="phase">
+    <span class="ph">Fase 5 · Skills</span>
+    <ul class="tight">
+      <li><code>GetSkills</code> com progressive disclosure; skills autoradas.</li>
+      <li>Job de indução em <code>on_session_closed</code> (a cada 10 sessions) com dedup.</li>
+    </ul>
+  </div>
+  <div class="phase">
+    <span class="ph">Fase 6 · Endurecimento</span>
+    <ul class="tight">
+      <li>Trocar o <code>SandboxBackend</code> trivial por isolamento de kernel (gVisor/Firecracker) — ver plano de sandbox.</li>
+      <li>Dashboards de tokens/custo; quotas; alertas de gasto.</li>
+    </ul>
+  </div>
+</section>
+
+<!-- ===================== CHECKLIST ===================== -->
+<section id="checklist">
+  <h2><span class="num">11</span>Checklist de implementação</h2>
+  <ul class="check">
+    <li><b>Postgres</b> com pgvector; tabelas users/sessions/turns/summaries/checkpoints/skills/tool_index/step_logs <span class="tag g">§03</span></li>
+    <li><b>OpenRouterProvider</b>: <code>context_length</code> por modelo + <code>usage</code> gravado no turn <span class="tag a">§04</span></li>
+    <li><b>Loop</b> com guard de orçamento por session → para e retorna parcial <span class="tag y">§05</span></li>
+    <li><b>Turn = mensagem</b> com role e <code>tokens_in/out</code>; contador de user-turns <span class="tag y">§05</span></li>
+    <li><b>Memory budget</b> = janela − system − reserva_resposta <span class="tag g">§06</span></li>
+    <li><b>Sumarização</b> encadeada + 10% verbatim; turns viram <code>in_window=false</code> <span class="tag g">§06</span></li>
+    <li><b>Checkpoint</b> a cada 20 user-turns (classificação de assunto) <span class="tag g">§06</span></li>
+    <li><b>Built-in tools</b>: GetTools, SearchTools, GetSkills, Bash (sempre no prompt) <span class="tag a">§07</span></li>
+    <li><b>Index Tools</b> via MCP no <code>tool_index</code>, descobertas por busca (O(1) no prompt) <span class="tag a">§07</span></li>
+    <li><b>Skills por usuário</b> + indução automática a cada 10 sessions com dedup <span class="tag a">§08</span></li>
+    <li><b>Observabilidade</b>: step_logs por passo; tokens por turn/session/usuário <span class="tag y">§09</span></li>
+    <li><b>SandboxBackend</b> plugável para o Bash (isolamento detalhado em plano à parte) <span class="tag r">§10</span></li>
+  </ul>
+</section>
+
+<footer>
+  <p>Plano de implementação do harness · OpenRouter · Postgres · Python · MCP. Decisões de janela de contexto, sumarização encadeada, checkpoints, tools indexadas e indução de skills conforme alinhado. O isolamento de execução (sandbox multi-tenant, Kubernetes/VM, mTLS) é tratado no guia de arquitetura complementar.</p>
+</footer>
+
+</div>
+</main>
+</div>
+</body>
+</html>

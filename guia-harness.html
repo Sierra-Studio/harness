@@ -1,0 +1,689 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Harness Engineering Guide · Building your own agent harness</title>
+<style>
+  :root{
+    --bg:#0c0e14;
+    --bg-2:#11141d;
+    --surface:#161a26;
+    --surface-2:#1c2231;
+    --line:#262d3f;
+    --line-2:#333c54;
+    --txt:#e6e9f2;
+    --txt-2:#a7afc4;
+    --txt-3:#727a93;
+    --accent:#7c9cff;
+    --accent-2:#5be3c0;
+    --gold:#f5c46b;
+    --rose:#ff7a8a;
+    --violet:#b18cff;
+    --radius:14px;
+    --mono:"SF Mono",ui-monospace,"JetBrains Mono","Fira Code",Menlo,monospace;
+    --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Inter,Roboto,Helvetica,Arial,sans-serif;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{
+    margin:0;background:radial-gradient(1200px 700px at 78% -8%,#1a2138 0%,transparent 55%),
+                       radial-gradient(900px 600px at -8% 12%,#16202b 0%,transparent 50%),var(--bg);
+    color:var(--txt);font-family:var(--sans);line-height:1.65;font-size:16px;
+    -webkit-font-smoothing:antialiased;
+  }
+  a{color:var(--accent);text-decoration:none}
+  a:hover{text-decoration:underline}
+  ::selection{background:rgba(124,156,255,.3)}
+
+  /* layout */
+  .wrap{display:grid;grid-template-columns:280px 1fr;max-width:1500px;margin:0 auto;}
+  aside{
+    position:sticky;top:0;align-self:start;height:100vh;overflow-y:auto;
+    border-right:1px solid var(--line);padding:30px 22px;background:rgba(12,14,20,.6);backdrop-filter:blur(6px);
+  }
+  aside .brand{font-weight:700;font-size:15px;letter-spacing:.3px;margin-bottom:4px}
+  aside .brand span{color:var(--accent-2)}
+  aside .sub{color:var(--txt-3);font-size:12.5px;margin-bottom:24px}
+  nav a{display:block;color:var(--txt-2);font-size:13.5px;padding:6px 12px;border-radius:8px;border-left:2px solid transparent;text-decoration:none;margin:1px 0}
+  nav a:hover{background:var(--surface);color:var(--txt)}
+  nav a.head{margin-top:16px;color:var(--txt-3);font-size:11px;text-transform:uppercase;letter-spacing:1.2px;padding-left:12px;border:0}
+  main{padding:0 0 120px}
+  .inner{max-width:920px;margin:0 auto;padding:0 40px}
+
+  /* hero */
+  header.hero{padding:90px 40px 60px;max-width:920px;margin:0 auto}
+  .kicker{display:inline-flex;align-items:center;gap:8px;font-size:12px;text-transform:uppercase;letter-spacing:2px;color:var(--accent-2);font-weight:600;margin-bottom:22px;border:1px solid var(--line-2);padding:6px 14px;border-radius:100px;background:var(--surface)}
+  h1{font-size:48px;line-height:1.08;margin:0 0 20px;letter-spacing:-1.2px;font-weight:760}
+  h1 .grad{background:linear-gradient(100deg,#7c9cff,#5be3c0 55%,#b18cff);-webkit-background-clip:text;background-clip:text;color:transparent}
+  .lead{font-size:19px;color:var(--txt-2);max-width:720px}
+  .meta-row{display:flex;gap:28px;flex-wrap:wrap;margin-top:34px;padding-top:26px;border-top:1px solid var(--line)}
+  .meta-row div{font-size:13px;color:var(--txt-3)}
+  .meta-row b{display:block;color:var(--txt);font-size:14px;font-weight:600;margin-bottom:2px}
+
+  section{padding:54px 0;border-top:1px solid var(--line)}
+  section:first-of-type{border-top:0}
+  h2{font-size:30px;letter-spacing:-.6px;margin:0 0 6px;font-weight:720}
+  h2 .num{color:var(--accent);font-family:var(--mono);font-size:18px;font-weight:600;margin-right:14px;opacity:.85}
+  .h2sub{color:var(--txt-2);font-size:16.5px;margin:0 0 30px}
+  h3{font-size:20px;margin:38px 0 10px;letter-spacing:-.2px;font-weight:660}
+  h4{font-size:15px;margin:24px 0 8px;color:var(--txt);font-weight:640}
+  p{color:var(--txt-2)}
+  strong{color:var(--txt)}
+
+  /* cards */
+  .grid{display:grid;gap:18px;margin:26px 0}
+  .g2{grid-template-columns:1fr 1fr}
+  .g3{grid-template-columns:1fr 1fr 1fr}
+  .card{background:linear-gradient(180deg,var(--surface),var(--bg-2));border:1px solid var(--line);border-radius:var(--radius);padding:22px}
+  .card.hl{border-color:var(--line-2)}
+  .card h4{margin-top:0;display:flex;align-items:center;gap:10px;font-size:16px}
+  .card p{font-size:14px;margin:8px 0 0;color:var(--txt-2)}
+  .ic{width:34px;height:34px;border-radius:9px;display:grid;place-items:center;font-size:17px;flex:none;background:var(--surface-2);border:1px solid var(--line-2)}
+  .tag{display:inline-block;font-family:var(--mono);font-size:11px;padding:3px 9px;border-radius:6px;background:var(--surface-2);border:1px solid var(--line-2);color:var(--txt-2);margin:3px 4px 0 0}
+  .tag.a{color:var(--accent);border-color:rgba(124,156,255,.35)}
+  .tag.g{color:var(--accent-2);border-color:rgba(91,227,192,.3)}
+  .tag.y{color:var(--gold);border-color:rgba(245,196,107,.3)}
+  .tag.r{color:var(--rose);border-color:rgba(255,122,138,.3)}
+
+  /* numbered element block */
+  .el{display:grid;grid-template-columns:54px 1fr;gap:20px;padding:24px 0;border-top:1px solid var(--line)}
+  .el:first-child{border-top:0}
+  .el .badge{width:46px;height:46px;border-radius:12px;display:grid;place-items:center;font-family:var(--mono);font-weight:700;font-size:17px;background:var(--surface-2);border:1px solid var(--line-2);color:var(--accent)}
+  .el.mod .badge{color:var(--accent-2)}
+  .el h3{margin:0 0 4px}
+  .el .role{font-size:12.5px;text-transform:uppercase;letter-spacing:1.4px;color:var(--txt-3);margin-bottom:8px;font-weight:600}
+  .el ul{margin:10px 0 0;padding-left:18px}
+  .el li{color:var(--txt-2);font-size:14px;margin:4px 0}
+
+  /* code */
+  pre{background:#0a0c12;border:1px solid var(--line);border-radius:12px;padding:20px 22px;overflow-x:auto;font-family:var(--mono);font-size:13px;line-height:1.6;margin:20px 0;color:#cdd4e6}
+  pre .c{color:#6b7393}
+  pre .k{color:#b18cff}
+  pre .s{color:#5be3c0}
+  pre .f{color:#7c9cff}
+  pre .n{color:#f5c46b}
+  code{font-family:var(--mono);font-size:.88em;background:var(--surface-2);border:1px solid var(--line);padding:2px 6px;border-radius:6px;color:#cdd4e6}
+  pre code{background:none;border:0;padding:0}
+
+  .callout{border:1px solid var(--line-2);border-left:3px solid var(--accent);border-radius:10px;background:var(--surface);padding:16px 20px;margin:22px 0;font-size:14.5px}
+  .callout.warn{border-left-color:var(--rose)}
+  .callout.tip{border-left-color:var(--accent-2)}
+  .callout b{color:var(--txt)}
+  .callout .lbl{font-size:11px;text-transform:uppercase;letter-spacing:1.5px;font-weight:700;color:var(--accent);margin-bottom:6px;display:block}
+  .callout.warn .lbl{color:var(--rose)}
+  .callout.tip .lbl{color:var(--accent-2)}
+
+  /* diagram */
+  .diagram{background:linear-gradient(180deg,#0c0f17,#0a0c12);border:1px solid var(--line);border-radius:16px;padding:30px;margin:26px 0;overflow-x:auto}
+  .ascii{font-family:var(--mono);font-size:12.5px;line-height:1.5;color:var(--txt-2);white-space:pre;margin:0}
+  .ascii b{color:var(--accent)}
+  .ascii .g{color:var(--accent-2)}
+  .ascii .y{color:var(--gold)}
+  .ascii .r{color:var(--rose)}
+
+  /* table */
+  table{width:100%;border-collapse:collapse;margin:24px 0;font-size:14px}
+  th,td{text-align:left;padding:12px 14px;border-bottom:1px solid var(--line)}
+  th{color:var(--txt-3);font-size:12px;text-transform:uppercase;letter-spacing:.8px;font-weight:600}
+  td{color:var(--txt-2);vertical-align:top}
+  td b{color:var(--txt)}
+  tr:hover td{background:rgba(255,255,255,.012)}
+
+  .check{list-style:none;padding:0;margin:18px 0}
+  .check li{padding:10px 0 10px 34px;position:relative;border-bottom:1px solid var(--line);color:var(--txt-2);font-size:14.5px}
+  .check li:before{content:"";position:absolute;left:4px;top:14px;width:16px;height:16px;border-radius:5px;border:1.5px solid var(--accent-2);background:rgba(91,227,192,.12)}
+  .check li b{color:var(--txt)}
+
+  .pillrow{display:flex;flex-wrap:wrap;gap:8px;margin:16px 0}
+  .pill{font-size:12.5px;padding:6px 13px;border-radius:100px;border:1px solid var(--line-2);background:var(--surface);color:var(--txt-2)}
+
+  footer{max-width:920px;margin:0 auto;padding:40px;color:var(--txt-3);font-size:13px;border-top:1px solid var(--line)}
+  @media(max-width:1000px){.wrap{grid-template-columns:1fr}aside{display:none}.g2,.g3{grid-template-columns:1fr}h1{font-size:36px}.inner,header.hero{padding-left:24px;padding-right:24px}}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<aside>
+  <div class="brand">Harness<span>Engine</span></div>
+  <div class="sub">Implementation guide · v1.0</div>
+  <nav>
+    <a class="head">Foundations</a>
+    <a href="#intro">What a harness is</a>
+    <a href="#anatomia">Anatomy: 9 elements</a>
+    <a class="head">The elements</a>
+    <a href="#modulos">3 externalization modules</a>
+    <a href="#dimensoes">6 operational dimensions</a>
+    <a class="head">Architecture</a>
+    <a href="#plugavel">Pluggable design</a>
+    <a href="#sandbox">Sandbox & multi-tenancy</a>
+    <a href="#transporte">Secure transport</a>
+    <a href="#deploy">Kubernetes & VM</a>
+    <a class="head">Execution</a>
+    <a href="#seguranca">Threats & governance</a>
+    <a href="#checklist">Build checklist</a>
+  </nav>
+</aside>
+
+<main>
+<header class="hero">
+  <div class="kicker">● Harness Engineering for LLM Agents</div>
+  <h1>How to build your own <span class="grad">harness</span> — pluggable, isolated and scalable</h1>
+  <p class="lead">An implementation guide derived from <i>“Externalization in LLM Agents: A Unified Review of Memory, Skills, Protocols and Harness Engineering”</i> (Zhou et al., 2026), combined with the architecture patterns from the <a href="https://github.com/NousResearch/hermes-agent">Hermes Agent</a>. It covers every element of a powerful harness, multi-tenancy with isolated sandboxes, secure transport, and deployment on Kubernetes or a VM.</p>
+  <div class="meta-row">
+    <div><b>Primary source</b>arXiv:2604.08224v1 · §6–7</div>
+    <div><b>Architecture reference</b>NousResearch / hermes-agent</div>
+    <div><b>Focus</b>Pluggability · Isolation · Scale</div>
+  </div>
+</header>
+
+<div class="inner">
+
+<!-- ===================== INTRO ===================== -->
+<section id="intro">
+  <h2><span class="num">00</span>What a harness is (and isn't)</h2>
+  <p class="h2sub">Agent capability does not live only in the model — it emerges from the coupling between the model and the environment that organizes its cognition into action.</p>
+
+  <p>The paper makes a central claim: modern agents are built less by changing model weights and more by <strong>reorganizing the runtime around them</strong>. Capabilities we once expected the model to recover internally are now <strong>externalized</strong> into four layers:</p>
+
+  <div class="grid g2">
+    <div class="card"><h4><span class="ic">🧠</span>Memory</h4><p>Externalizes <strong>state across time</strong> — turns "recall" into "retrieval".</p></div>
+    <div class="card"><h4><span class="ic">🛠️</span>Skills</h4><p>Externalizes <strong>procedural expertise</strong> — turns improvised generation into guided composition.</p></div>
+    <div class="card"><h4><span class="ic">🔌</span>Protocols</h4><p>Externalizes <strong>interaction structure</strong> — turns ad-hoc coordination into structured exchange.</p></div>
+    <div class="card hl"><h4><span class="ic">⚙️</span>Harness</h4><p>The <strong>unification layer</strong> that coordinates everything above into governed execution.</p></div>
+  </div>
+
+  <div class="callout tip">
+    <span class="lbl">Operational definition</span>
+    A harness is the <b>designed cognitive environment</b> within which the externalized modules become jointly effective. It governs what the model perceives, what it retains across turns, which operations are callable, which actions require approval, which intermediate states are exposed for revision, and which failures are detectable and recoverable. It defines the agent's <b>practical cognitive boundary</b>.
+  </div>
+
+  <p>In practice a harness is not "a synonym for a memory system" nor "tool calling rebranded". It is the discipline of building the representational, procedural and operational conditions under which the model's reasoning becomes stable enough to sustain real work.</p>
+</section>
+
+<!-- ===================== ANATOMIA ===================== -->
+<section id="anatomia">
+  <h2><span class="num">01</span>Anatomy: the 9 elements of a powerful harness</h2>
+  <p class="h2sub">Three externalization modules supply the cognitive content; three operational surfaces (decomposed into six dimensions) govern how that content is accessed, constrained and monitored.</p>
+
+  <div class="diagram">
+<pre class="ascii">                        ┌───────────────────────────────────────────────┐
+                        │              <b>OPERATIONAL SURFACES</b>                │
+                        │   Permission  ·  Control  ·  Observability      │
+                        └───────────────────────────────────────────────┘
+        ╔═══════════════╗   ╔═══════════════╗   ╔═══════════════╗   ╔══════════════╗
+        ║ <span class="y">4 · Control</span>    ║   ║ <span class="y">5 · Permission</span> ║   ║ <span class="y">6 · Observ.</span>   ║   ║ <span class="y">7 · Context</span>   ║
+        ║ loop / limits ║   ║ sandbox/policy║   ║ logs / traces ║   ║ budget       ║
+        ╚═══════╤═══════╝   ╚═══════╤═══════╝   ╚═══════╤═══════╝   ╚══════╤═══════╝
+                │                   │                   │                  │
+                └─────────┬─────────┴─────────┬─────────┴────────┬─────────┘
+                          ▼                   ▼                  ▼
+                   ┌─────────────────────────────────────────────────┐
+                   │           <b>FOUNDATION MODEL (Agent Core)</b>          │
+                   │      perceive → retrieve → plan → act             │
+                   │            → observe → revise (loop)              │
+                   └─────────────────────────────────────────────────┘
+                          ▲                   ▲                  ▲
+                ┌─────────┴─────────┬─────────┴─────────┬────────┴─────────┐
+        ╔═══════╧═══════╗   ╔═══════╧═══════╗   ╔═══════╧═══════╗   ╔══════╧═══════╗
+        ║ <span class="g">1 · Memory</span>     ║   ║ <span class="g">2 · Skills</span>     ║   ║ <span class="g">3 · Protocols</span>  ║   ║ <span class="y">+ Approval</span>    ║
+        ║ state/time    ║   ║ routines      ║   ║ interfaces    ║   ║ human gates  ║
+        ╚═══════════════╝   ╚═══════════════╝   ╚═══════════════╝   ╚══════════════╝
+                        └───────────────────────────────────────────────┘
+                        │            <b>EXTERNALIZATION MODULES</b>            │
+                        └───────────────────────────────────────────────┘</pre>
+  </div>
+  <p style="font-size:13px;color:var(--txt-3);text-align:center;margin-top:-6px">Figure 1 — The harness as cognitive environment. The model sits at the center; nine elements form the coordinating ring (adapted from Zhou et al., Fig. 7).</p>
+</section>
+
+<!-- ===================== MÓDULOS ===================== -->
+<section id="modulos">
+  <h2><span class="num">02</span>The 3 externalization modules</h2>
+  <p class="h2sub">These are the agent's cognitive content. Distinct yet coupled — each one feeds the others in a self-reinforcing cycle.</p>
+
+  <div class="el mod">
+    <div class="badge">1</div>
+    <div>
+      <div class="role">Module · Externalized state</div>
+      <h3>🧠 Memory — state persistence</h3>
+      <p>Carries continuity across time: session state, project context and failure recording. It turns the <em>recall</em> problem into a targeted <em>retrieval</em> problem — instead of flooding the model with the full log, it selects the slice relevant to the current step.</p>
+      <ul>
+        <li><strong>What it externalizes:</strong> facts, episodes (past trajectories), entity relations, cross-session context.</li>
+        <li><strong>Architectures:</strong> monolithic context → context + retrieval (RAG) → hierarchical/orchestrated memory → adaptive memory.</li>
+        <li><strong>Governed paths:</strong> every read/write must be inspectable, auditable and versioned (provenance).</li>
+        <li><strong>Key risk:</strong> <em>memory poisoning</em> — corrupted traces silently distort future reasoning.</li>
+      </ul>
+      <div class="pillrow"><span class="pill">Summarization</span><span class="pill">Episodic traces</span><span class="pill">Vector store</span><span class="pill">Provenance</span><span class="pill">Cross-session recall</span></div>
+    </div>
+  </div>
+
+  <div class="el mod">
+    <div class="badge">2</div>
+    <div>
+      <div class="role">Module · Externalized expertise</div>
+      <h3>🛠️ Skills — reusable routines</h3>
+      <p>Package procedural expertise: operational procedures, decision heuristics and normative constraints. The model is asked less often to invent a workflow from scratch and more often to interpret and follow a prepared one.</p>
+      <ul>
+        <li><strong>Lifecycle:</strong> specification → discovery → <em>progressive disclosure</em> (staged loading) → execution binding → composition.</li>
+        <li><strong>Acquisition:</strong> distilled from successful trajectories (memory→skill) and revised from recurring failures (skill→memory).</li>
+        <li><strong>Hermes pattern:</strong> autonomous skill creation after complex tasks; skills that self-improve during use; compatible with the open <code>agentskills.io</code> standard.</li>
+        <li><strong>Key risk:</strong> malicious <em>skill injection</em> and <em>tool sprawl</em> that turns action selection into a disambiguation problem.</li>
+      </ul>
+      <div class="pillrow"><span class="pill">Staged loading</span><span class="pill">SKILL.md</span><span class="pill">Failure-driven revision</span><span class="pill">Composition</span><span class="pill">Skills Hub</span></div>
+    </div>
+  </div>
+
+  <div class="el mod">
+    <div class="badge">3</div>
+    <div>
+      <div class="role">Module · Externalized interaction</div>
+      <h3>🔌 Protocols — deterministic interfaces</h3>
+      <p>They replace open-ended natural-language inference with a structured task: fill typed fields, follow a declared state transition and receive structured feedback. The model contributes judgment; the protocol contributes format, validation and lifecycle control.</p>
+      <ul>
+        <li><strong>Types:</strong> Agent↔Tool (MCP, OpenAPI, JSON-RPC), Agent↔Agent (A2A), Agent↔User.</li>
+        <li><strong>Role in the harness:</strong> intent capture/normalization, capability discovery, tool description, session and lifecycle management.</li>
+        <li><strong>As action schema:</strong> shape the output boundary — constrain the generative space (JSON Schema) and make execution deterministic enough to govern.</li>
+        <li><strong>Key risk:</strong> <em>protocol spoofing</em> — forged manifests or manipulated endpoints cause unauthorized actions under a legitimate appearance.</li>
+      </ul>
+      <div class="pillrow"><span class="pill">MCP</span><span class="pill">JSON Schema</span><span class="pill">OpenAPI</span><span class="pill">A2A</span><span class="pill">Schema validation</span></div>
+    </div>
+  </div>
+
+  <div class="callout">
+    <span class="lbl">The self-reinforcing cycle</span>
+    Memory feeds skill distillation; skills produce rich traces; traces improve memory; protocols normalize results back into memory (Protocol→Memory). <b>Beware:</b> this positive feedback also amplifies errors — a poisoned memory entry yields a flawed skill, whose traces further contaminate memory. No single module can interrupt the cascade without harness-level intervention.
+  </div>
+</section>
+
+<!-- ===================== DIMENSÕES ===================== -->
+<section id="dimensoes">
+  <h2><span class="num">03</span>The 6 operational dimensions</h2>
+  <p class="h2sub">These are not forms of externalization — they are the coordinating infrastructure that makes memory, skills and protocols work as a coherent system. Independently developed systems (Codex, Claude Code) converge on these six, which signals they are <em>structural requirements</em>, not incidental choices.</p>
+
+  <div class="el">
+    <div class="badge">4</div>
+    <div>
+      <div class="role">Control · Temporal backbone</div>
+      <h3>Agent Loop & Control Flow</h3>
+      <p>The <code>perceive → retrieve → plan → act → observe → revise</code> loop. What the harness adds beyond the bare loop is <strong>governance over termination, recursion and resource consumption</strong> — without it, the loop cycles indefinitely, escalates costs through unbounded tool calls, or recurses into sub-agents that exhaust the budget.</p>
+      <ul>
+        <li><strong>Topologies:</strong> single-loop (reasoning+action in one pass), hierarchical (planner + executors), multi-agent (subtasks routed to agents with distinct tool sets and permission scopes).</li>
+        <li><strong>Mandatory controls:</strong> max step count, recursion depth limit, per-step cost ceiling, timeouts. They define the <em>operational envelope</em>.</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="el">
+    <div class="badge">5</div>
+    <div>
+      <div class="role">Permission · Execution boundary</div>
+      <h3>Sandboxing & Execution Isolation <span class="tag r">critical for this project</span></h3>
+      <p>Whenever the agent acts on the world — writing files, executing shell, calling APIs — the harness decides how much of the environment to expose and how to contain side effects. The sandbox is not just a security fence: it is a <strong>cognitive boundary</strong> that simplifies the environment by removing irrelevant state and making the workspace inspectable.</p>
+      <ul>
+        <li><strong>Granularities:</strong> a dedicated sandbox per task (its own filesystem snapshot, network restrictions, resource quotas) — the Codex model; or graduated permission modes (autonomous → mandatory approval per tool call) — the Claude Code model.</li>
+        <li><strong>Principle:</strong> one execution can never contaminate another. This is the foundation of the multi-tenant isolation in §05.</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="el">
+    <div class="badge">+</div>
+    <div>
+      <div class="role">Permission · Human oversight</div>
+      <h3>Human Oversight & Approval Gates</h3>
+      <p>Full autonomy is rarely appropriate. The level of autonomy is a <strong>configurable harness parameter</strong> — adjustable per task, per tool and per organizational policy — not a binary property of the agent.</p>
+      <ul>
+        <li><strong>Pre-execution approval:</strong> pauses before each consequential action and asks for confirmation.</li>
+        <li><strong>Post-execution review:</strong> lets the agent act but surfaces results before committing/continuing.</li>
+        <li><strong>Escalation triggers:</strong> runs autonomously but halts on risk signals (sensitive data, irreversible operation, confidence below a threshold).</li>
+        <li><strong>Hook systems:</strong> attach arbitrary logic (scripts, validations, notifications) to lifecycle events — tool invocation, file write, subagent spawn.</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="el">
+    <div class="badge">6</div>
+    <div>
+      <div class="role">Observability · Structured feedback</div>
+      <h3>Observability & Structured Feedback</h3>
+      <p>An agent that acts without leaving inspectable traces cannot be debugged, audited or improved. Observability serves two purposes: <strong>externally</strong> (debugging, compliance auditing, post-incident analysis) and <strong>internally</strong> (it closes the feedback loop that connects execution outcomes back to the modules).</p>
+      <ul>
+        <li><strong>What to log:</strong> every model invocation, tool call, memory read/write and decision branch; execution traces linking each action to its causal antecedents.</li>
+        <li><strong>Aggregate metrics:</strong> step counts, token consumption, error rates, latency distributions.</li>
+        <li><strong>Internal feedback:</strong> failed tool call → memory write; repeated failures → flag a skill for revision; latency spike → switch protocol path.</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="el">
+    <div class="badge">5</div>
+    <div>
+      <div class="role">Permission · Externalized governance</div>
+      <h3>Configuration, Permissions & Policy Encoding</h3>
+      <p>The harness encodes not only what the agent <em>can</em> do, but what it is <em>allowed</em> to do and under what conditions. Configuration separates policy from execution logic and makes the rules explicit, versionable and auditable.</p>
+      <ul>
+        <li><strong>Stratified scopes:</strong> <span class="tag">user</span> preferences/trust → <span class="tag">project</span> available tools, accessible paths, commands requiring approval → <span class="tag">org</span> compliance, cost ceilings, data rules projects cannot override.</li>
+        <li><strong>Governance as data:</strong> declarative rules enforced at runtime, not embedded in prompts nor filtered post-hoc. The same base agent runs under different policy regimes without changing the model or its skills.</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="el">
+    <div class="badge">7</div>
+    <div>
+      <div class="role">Control · The scarcest resource</div>
+      <h3>Context Budget Management</h3>
+      <p>The context window is the scarcest shared resource. Memory retrieval, skill loading, protocol schemas, tool descriptions and the reasoning traces themselves all compete for the same finite token budget. It is a <strong>dynamic resource-allocation problem</strong>, not isolated compression.</p>
+      <ul>
+        <li><strong>Summarization:</strong> compresses older history while preserving decision-relevant information.</li>
+        <li><strong>Priority-based eviction:</strong> removes/demotes entries whose relevance to the active subtask has decayed.</li>
+        <li><strong>Staged loading:</strong> detailed procedural guidance enters the context only when a matching task pattern is detected.</li>
+        <li><strong>Budget-aware routing:</strong> the optimal allocation depends on the phase — early planning wants more memory; late execution wants more skill.</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="callout warn">
+    <span class="lbl">Design principle</span>
+    The goal is <b>efficient, utility-positive</b> externalization, not maximal. <b>Minimal sufficiency:</b> each module must reduce the cognitive burden, not add one. A good harness simplifies the model's decision problem; it does not create a second one.
+  </div>
+</section>
+
+<!-- ===================== PLUGÁVEL ===================== -->
+<section id="plugavel">
+  <h2><span class="num">04</span>Pluggable architecture (Hermes-style)</h2>
+  <p class="h2sub">To swap the harness or the sandbox without rewriting the system, everything communicates through <strong>stable interface contracts</strong>. Hermes does exactly this: it is <em>model-agnostic</em>, has a modular <em>toolset system</em>, and supports multiple <em>terminal backends</em> (local, Docker, SSH, Singularity, Modal, Daytona) behind the same interface.</p>
+
+  <p>The key to pluggability is defining <strong>four contract boundaries</strong> and programming against them, never against concrete implementations:</p>
+
+  <div class="grid g2">
+    <div class="card"><h4><span class="ic">①</span>Harness ↔ Model</h4><p><code>ModelProvider</code> interface. Any LLM (Claude, GPT, open-weights) pluggable via an adapter that normalizes calls and tool-calling.</p></div>
+    <div class="card"><h4><span class="ic">②</span>Harness ↔ Sandbox</h4><p><code>SandboxBackend</code> interface. Docker, gVisor, Firecracker, K8s Pod, Daytona, Modal — all behind the same <code>exec/read/write</code> contract.</p></div>
+    <div class="card"><h4><span class="ic">③</span>Harness ↔ Tools</h4><p><code>Toolset</code> interface + MCP. Native tools and any external MCP server discovered via capability discovery.</p></div>
+    <div class="card"><h4><span class="ic">④</span>Harness ↔ Frontend</h4><p>Transport gateway. A single agent logic serving CLI, Web, Slack, etc. (Hermes' "gateway process").</p></div>
+  </div>
+
+  <h3>Contract 1 — <code>HarnessEngine</code> (swappable)</h3>
+  <p>The whole harness sits behind a facade. You can replace the entire engine (e.g. swap your implementation for a Hermes-based one) while keeping sandbox, tools and frontend.</p>
+<pre><span class="c">// The contract ANY harness must fulfill. Swapping the harness = swapping the impl.</span>
+<span class="k">interface</span> <span class="f">HarnessEngine</span> {
+  <span class="c">// starts/resumes a per-user isolated session (see §05)</span>
+  <span class="f">createSession</span>(ctx: <span class="n">SessionContext</span>): <span class="n">Promise</span>&lt;<span class="n">SessionHandle</span>&gt;
+
+  <span class="c">// runs one turn of the agent loop; emits observable events</span>
+  <span class="f">step</span>(session: <span class="n">SessionHandle</span>, input: <span class="n">UserInput</span>): <span class="n">AsyncIterable</span>&lt;<span class="n">AgentEvent</span>&gt;
+
+  <span class="c">// pluggable dependency injection</span>
+  model:    <span class="n">ModelProvider</span>
+  sandbox:  <span class="n">SandboxBackend</span>
+  tools:    <span class="n">ToolRegistry</span>
+  memory:   <span class="n">MemoryStore</span>
+  policy:   <span class="n">PolicyEngine</span>
+  tracer:   <span class="n">Observer</span>
+}</pre>
+
+  <h3>Contract 2 — <code>SandboxBackend</code> (swappable)</h3>
+  <p>The harness <strong>never</strong> runs bash directly on the host. It delegates to a backend that fulfills this contract. Swapping Docker for Firecracker or for a K8s Pod is swapping the implementation, not the harness.</p>
+<pre><span class="k">interface</span> <span class="f">SandboxBackend</span> {
+  <span class="c">// provisions an isolated environment for ONE session of ONE user</span>
+  <span class="f">provision</span>(spec: <span class="n">SandboxSpec</span>): <span class="n">Promise</span>&lt;<span class="n">Sandbox</span>&gt;
+
+  <span class="c">// runs a command inside the isolation; streams stdout/stderr</span>
+  <span class="f">exec</span>(sb: <span class="n">Sandbox</span>, cmd: <span class="n">Command</span>): <span class="n">AsyncIterable</span>&lt;<span class="n">ExecChunk</span>&gt;
+
+  <span class="f">readFile</span>(sb: <span class="n">Sandbox</span>, path: <span class="n">string</span>): <span class="n">Promise</span>&lt;<span class="n">Bytes</span>&gt;
+  <span class="f">writeFile</span>(sb: <span class="n">Sandbox</span>, path: <span class="n">string</span>, data: <span class="n">Bytes</span>): <span class="n">Promise</span>&lt;<span class="n">void</span>&gt;
+
+  <span class="c">// destroys ALL state — guarantees nothing leaks to the next session</span>
+  <span class="f">destroy</span>(sb: <span class="n">Sandbox</span>): <span class="n">Promise</span>&lt;<span class="n">void</span>&gt;
+}
+
+<span class="k">type</span> <span class="n">SandboxSpec</span> = {
+  sessionId:  <span class="n">string</span>
+  userId:     <span class="n">string</span>          <span class="c">// used for namespacing and quotas</span>
+  image:      <span class="n">string</span>          <span class="c">// minimal base image</span>
+  cpu:        <span class="n">string</span>          <span class="c">// e.g. "500m"</span>
+  memory:     <span class="n">string</span>          <span class="c">// e.g. "512Mi"</span>
+  timeoutSec: <span class="n">number</span>
+  network:    <span class="s">"none"</span> | <span class="s">"egress-allowlist"</span>
+  ttlSec:     <span class="n">number</span>          <span class="c">// auto-destruction</span>
+}</pre>
+
+  <div class="callout tip">
+    <span class="lbl">The golden rule of pluggability</span>
+    If the harness knows the name <code>Docker</code> or <code>Firecracker</code> anywhere outside the backend factory, the abstraction has leaked. The harness only knows <code>SandboxBackend</code>. The concrete choice comes from configuration: <code>backend: kubernetes-pod | firecracker-vm | docker | daytona</code>.
+  </div>
+</section>
+
+<!-- ===================== SANDBOX MULTI-TENANT ===================== -->
+<section id="sandbox">
+  <h2><span class="num">05</span>Sandbox & multi-tenant isolation</h2>
+  <p class="h2sub">The core requirement of this project: many users on the same harness, with no user able to access another's session. Every session that needs bash runs in a disposable sandbox with resource isolation.</p>
+
+  <h3>The model: one ephemeral sandbox per session</h3>
+  <p>The harness is a shared service that is stateless with respect to execution; the <strong>dangerous state</strong> (filesystem, processes, network) always lives inside a dedicated sandbox, created for one session and destroyed at the end. This gives the three "I"s: <strong>Isolation</strong> (one execution does not contaminate another), <strong>Identity</strong> (each sandbox is bound to a <code>userId</code>) and <strong>Impermanence</strong> (TTL + destroy guarantee nothing leaks).</p>
+
+  <div class="diagram">
+<pre class="ascii">   <b>User A</b>             <b>User B</b>             <b>User C</b>
+      │                  │                  │
+      ▼                  ▼                  ▼
+ ┌─────────────────────────────────────────────────────┐
+ │            <b>HARNESS (control plane, shared)</b>            │
+ │   auth · session routing · agent loop · policy       │
+ └───────┬──────────────────┬──────────────────┬────────┘
+         │ mTLS             │ mTLS             │ mTLS
+         ▼                  ▼                  ▼
+ ┌───────────────┐  ┌───────────────┐  ┌───────────────┐
+ │ <span class="g">SANDBOX A</span>     │  │ <span class="g">SANDBOX B</span>     │  │ <span class="g">SANDBOX C</span>     │
+ │ ns: user-a    │  │ ns: user-b    │  │ ns: user-c    │
+ │ own fs        │  │ own fs        │  │ own fs        │
+ │ cpu/mem quota │  │ cpu/mem quota │  │ cpu/mem quota │
+ │ <span class="r">no net ↔ B/C</span>   │  │ <span class="r">no net ↔ A/C</span>   │  │ <span class="r">no net ↔ A/B</span>   │
+ │ TTL + destroy │  │ TTL + destroy │  │ TTL + destroy │
+ └───────────────┘  └───────────────┘  └───────────────┘
+   ephemeral          ephemeral          ephemeral</pre>
+  </div>
+
+  <h3>Isolation layers (defense in depth)</h3>
+  <table>
+    <thead><tr><th>Layer</th><th>Mechanism</th><th>What it prevents</th></tr></thead>
+    <tbody>
+      <tr><td><b>Identity</b></td><td>Session bound to <code>userId</code>; scoped sandbox token; no shared credentials</td><td>User A requesting B's sandbox</td></tr>
+      <tr><td><b>Compute</b></td><td>Kernel isolation: gVisor / Kata / Firecracker microVM (not just Docker namespaces)</td><td>Container escape to the host or neighbors</td></tr>
+      <tr><td><b>Filesystem</b></td><td>Own snapshot/overlay per sandbox, read-only base, <code>tmpfs</code> for scratch</td><td>Reading another session's data</td></tr>
+      <tr><td><b>Network</b></td><td><code>NetworkPolicy</code> default-deny; egress via allowlist only; no pod-to-pod traffic</td><td>Lateral movement between sandboxes</td></tr>
+      <tr><td><b>Resources</b></td><td><code>ResourceQuota</code> + CPU/mem limits; PID limits; no privileged; <code>seccomp</code>/AppArmor</td><td>Noisy neighbor, DoS, fork bombs</td></tr>
+      <tr><td><b>Time</b></td><td>Automatic TTL + idempotent <code>destroy()</code> on session end</td><td>Residual state leaking to the next session</td></tr>
+    </tbody>
+  </table>
+
+  <div class="callout warn">
+    <span class="lbl">Important — kernel isolation, not just containers</span>
+    For true multi-tenancy with arbitrary code execution, Docker namespaces are <b>not enough</b>. Use a kernel boundary: <b>gVisor</b> (runsc), <b>Kata Containers</b> or <b>Firecracker microVMs</b>. They guarantee that an escape in A's sandbox cannot reach the host nor B's sandbox. Daytona and Modal (Hermes backends) already deliver this isolation as a service.
+  </div>
+
+  <h3>Session lifecycle</h3>
+<pre><span class="c">// pseudo-flow inside the HarnessEngine</span>
+<span class="k">async function</span> <span class="f">handleTurn</span>(userId, sessionId, input) {
+  <span class="k">const</span> sb = <span class="k">await</span> registry.sandbox.<span class="f">provision</span>({
+    sessionId, userId,
+    image: <span class="s">"harness/base-tools:slim"</span>,
+    cpu: <span class="s">"500m"</span>, memory: <span class="s">"512Mi"</span>,
+    network: <span class="s">"egress-allowlist"</span>,
+    timeoutSec: <span class="n">120</span>, ttlSec: <span class="n">1800</span>
+  })
+  <span class="k">try</span> {
+    <span class="k">for</span> <span class="k">await</span> (<span class="k">const</span> ev <span class="k">of</span> engine.<span class="f">step</span>(session, input)) {
+      <span class="k">if</span> (ev.type === <span class="s">"tool:bash"</span>)
+        <span class="k">await</span> registry.sandbox.<span class="f">exec</span>(sb, ev.cmd)   <span class="c">// runs INSIDE the isolation</span>
+      tracer.<span class="f">emit</span>(ev)                              <span class="c">// observability (§03.6)</span>
+    }
+  } <span class="k">finally</span> {
+    <span class="k">await</span> registry.sandbox.<span class="f">destroy</span>(sb)            <span class="c">// nothing survives the turn</span>
+  }
+}</pre>
+</section>
+
+<!-- ===================== TRANSPORTE ===================== -->
+<section id="transporte">
+  <h2><span class="num">06</span>Secure data path: harness ↔ sandbox</h2>
+  <p class="h2sub">The channel between control plane and sandbox carries commands, file contents and execution outputs — potentially sensitive data. It must be encrypted, mutually authenticated and minimally scoped.</p>
+
+  <div class="grid g3">
+    <div class="card"><h4><span class="ic">🔒</span>mTLS</h4><p>Mutual TLS between harness and each sandbox. Both sides present a certificate; no cleartext traffic, even inside the cluster.</p></div>
+    <div class="card"><h4><span class="ic">🎫</span>Scoped tokens</h4><p>Each sandbox gets a short-lived token valid only for <code>{userId, sessionId}</code>. No shared ambient credentials.</p></div>
+    <div class="card"><h4><span class="ic">📡</span>Single channel</h4><p>All communication over one structured protocol (gRPC/WebSocket over mTLS). No ad-hoc SSH nor extra open ports.</p></div>
+  </div>
+
+  <h3>Recommended pattern</h3>
+  <ul>
+    <li><strong>Transport:</strong> gRPC with bidirectional streaming over <strong>mTLS</strong> — commands go down, <code>ExecChunk</code> (stdout/stderr/exit) streams up. On K8s, optionally a <em>service mesh</em> (Istio/Linkerd) provides automatic mTLS and SPIFFE/SPIRE identity per workload.</li>
+    <li><strong>Authentication:</strong> workload identity (SPIFFE ID) per sandbox; the harness validates that the ID matches the expected <code>sessionId</code> before accepting any byte.</li>
+    <li><strong>Authorization:</strong> the session token limits <em>which</em> operations the channel accepts (command allowlist, permitted paths). Least privilege on the wire itself.</li>
+    <li><strong>Data confidentiality:</strong> sensitive data in transit encrypted by mTLS; at rest (if scratch is persisted) encrypted at the volume level. Logs/traces (§03.6) <strong>redact</strong> secrets before persisting.</li>
+    <li><strong>Integrity:</strong> protocol results are <em>normalized and assimilated</em> back into memory (Protocol→Memory) only after schema validation — preventing <em>protocol spoofing</em>.</li>
+  </ul>
+
+  <div class="diagram">
+<pre class="ascii"> <b>HARNESS</b>                          <b>SANDBOX</b>
+   │                                  │
+   │── 1. provision(spec) ──────────▶ │  creates pod/microVM, issues cert
+   │◀───── SPIFFE ID + endpoint ──────│
+   │                                  │
+   │═══ 2. <b>mTLS</b> handshake ════════════│  both validate certificate
+   │                                  │
+   │── 3. exec(cmd) [gRPC stream] ───▶│  validates token+scope, runs in
+   │◀── ExecChunk{stdout} ────────────│  kernel isolation
+   │◀── ExecChunk{stderr} ────────────│
+   │◀── ExecChunk{exit:0} ────────────│
+   │                                  │
+   │── 4. destroy() ────────────────▶ │  wipe fs, kill processes,
+   │                                  │  revoke cert
+   ▼                                  ▼</pre>
+  </div>
+</section>
+
+<!-- ===================== DEPLOY ===================== -->
+<section id="deploy">
+  <h2><span class="num">07</span>Deployment: Kubernetes or VM</h2>
+  <p class="h2sub">The same architecture runs on both targets because the sandbox backend is pluggable. On K8s, each sandbox is an ephemeral Pod; on a single VM, each sandbox is a microVM or a container with kernel isolation.</p>
+
+  <h3>Option A — Kubernetes (horizontal scale)</h3>
+  <div class="diagram">
+<pre class="ascii"> ┌──────────────────────────── <b>K8s Cluster</b> ─────────────────────────────┐
+ │                                                                        │
+ │  ┌─ ns: <b>harness-system</b> ─────────┐    ┌─ ns: <b>sandboxes</b> (1 per session)┐ │
+ │  │  Deployment: harness (N replicas)│    │  Pod sandbox-A  [gVisor/Kata] │ │
+ │  │  Service + Ingress (TLS)         │    │  Pod sandbox-B  [gVisor/Kata] │ │
+ │  │  Sandbox Orchestrator            │───▶│  Pod sandbox-C  [gVisor/Kata] │ │
+ │  │  PolicyEngine · Tracer           │mTLS│  ResourceQuota + LimitRange   │ │
+ │  └──────────────────────────────────┘    │  NetworkPolicy: default-deny  │ │
+ │                                           │  RuntimeClass: <span class="g">runsc/kata</span>     │ │
+ │  ┌─ stateful ──────────────────────┐      └───────────────────────────────┘ │
+ │  │ MemoryStore (PG/Redis/vector)   │                                         │
+ │  │ Object store (traces, logs)     │   HPA scales harness by load            │
+ │  └─────────────────────────────────┘   Sandbox pods created/destroyed on     │
+ │                                          demand by the Orchestrator           │
+ └────────────────────────────────────────────────────────────────────────────┘</pre>
+  </div>
+  <ul>
+    <li><strong>Sandbox = ephemeral Pod</strong> with a kernel-isolation <code>RuntimeClass</code> (<code>runsc</code> for gVisor or <code>kata</code>), created by the Orchestrator and removed at session end.</li>
+    <li><strong>Isolation:</strong> <code>NetworkPolicy</code> default-deny + dedicated namespace + <code>ResourceQuota</code> + <code>seccomp</code>/AppArmor + non-root + read-only root fs.</li>
+    <li><strong>Scale:</strong> HPA scales the control plane; sandboxes scale naturally (1 per session). A warm pool can reduce cold-start latency.</li>
+    <li><strong>mTLS:</strong> service mesh (Istio/Linkerd) or cert-manager + SPIRE for per-workload identity.</li>
+  </ul>
+
+  <h3>Option B — Single VM (smaller footprint)</h3>
+  <ul>
+    <li><strong>Sandbox = microVM</strong> (Firecracker) or container with gVisor, orchestrated by a local daemon that implements the same <code>SandboxBackend</code>.</li>
+    <li>The harness runs as a service on the VM; communication over a local socket on mTLS. Kernel isolation remains the security boundary.</li>
+    <li>Hermes shows this runs "on a $5 VPS or on a GPU cluster" — the interface does not change; only the configured backend does.</li>
+  </ul>
+
+  <table>
+    <thead><tr><th>Aspect</th><th>Kubernetes</th><th>Single VM</th></tr></thead>
+    <tbody>
+      <tr><td><b>Sandbox unit</b></td><td>Ephemeral Pod + RuntimeClass</td><td>Firecracker microVM / gVisor container</td></tr>
+      <tr><td><b>Network isolation</b></td><td>NetworkPolicy / mesh</td><td>iptables / network namespaces + tap</td></tr>
+      <tr><td><b>Scale</b></td><td>Horizontal, multi-node, HPA</td><td>Vertical, bounded by the VM</td></tr>
+      <tr><td><b>When to use</b></td><td>Many users, production, heavy multi-tenancy</td><td>POC, single-tenant, minimal cost</td></tr>
+      <tr><td><b>Pluggable backend</b></td><td><code>kubernetes-pod</code></td><td><code>firecracker-vm</code> / <code>docker-gvisor</code></td></tr>
+    </tbody>
+  </table>
+</section>
+
+<!-- ===================== SEGURANÇA ===================== -->
+<section id="seguranca">
+  <h2><span class="num">08</span>Threats & governance</h2>
+  <p class="h2sub">Externalization is not free: by moving cognitive burden into external artifacts, those artifacts become targets. Governance is a <strong>co-designed layer of the harness</strong>, not an afterthought.</p>
+
+  <div class="grid g3">
+    <div class="card"><h4><span class="ic">☠️</span>Lethal Trifecta</h4><p>Sensitive-data access + unconstrained external communication + unverified execution. Break at least one of the three by design.</p></div>
+    <div class="card"><h4><span class="ic">🧪</span>Memory poisoning</h4><p>Corrupted traces distort future reasoning. Mitigate with provenance, write validation and deterministic rollback.</p></div>
+    <div class="card"><h4><span class="ic">💉</span>Skill injection</h4><p>Adversarial procedures in the repertoire. Mitigate with mandatory review gates for critical skills and artifact signing.</p></div>
+    <div class="card"><h4><span class="ic">🎭</span>Protocol spoofing</h4><p>Forged manifests / manipulated endpoints. Mitigate with skill-independent schema validation and mTLS.</p></div>
+    <div class="card"><h4><span class="ic">🏚️</span>Tool sprawl</h4><p>Too many tools becomes a disambiguation problem. Mitigate with scoped discovery and staged loading.</p></div>
+    <div class="card"><h4><span class="ic">🌊</span>Error cascade</h4><p>The self-reinforcing cycle amplifies failures. Only harness-level intervention interrupts it — hence observability.</p></div>
+  </div>
+
+  <div class="callout">
+    <span class="lbl">Governance as infrastructure</span>
+    Mandatory review gates for critical updates · <b>provenance tracking</b> for memory and skill changes · <b>deterministic rollback</b> mechanisms · regression testing. The quality of an externalized system is measured not only by what it enables, but by <b>how transparently and reversibly</b> it does so.
+  </div>
+</section>
+
+<!-- ===================== CHECKLIST ===================== -->
+<section id="checklist">
+  <h2><span class="num">09</span>Implementation checklist</h2>
+  <p class="h2sub">A minimal roadmap for a pluggable, multi-tenant and secure harness. Each item maps to a section above.</p>
+
+  <h4>Externalization modules</h4>
+  <ul class="check">
+    <li><b>Memory</b> with governed read/write paths, provenance and selective retrieval <span class="tag g">§02</span></li>
+    <li><b>Skills</b> with staged loading (progressive disclosure) and failure-driven revision <span class="tag g">§02</span></li>
+    <li><b>Protocols</b> typed (MCP/JSON Schema) with validation at the output boundary <span class="tag g">§02</span></li>
+  </ul>
+
+  <h4>Operational dimensions</h4>
+  <ul class="check">
+    <li><b>Agent loop</b> with step limits, recursion depth, cost ceiling and timeout <span class="tag y">§03</span></li>
+    <li><b>Sandboxing</b> with kernel isolation (gVisor/Kata/Firecracker) per session <span class="tag y">§03·05</span></li>
+    <li><b>Approval gates</b> configurable (pre/post/escalation) + hook system <span class="tag y">§03</span></li>
+    <li><b>Observability</b>: structured logging, execution traces and aggregate metrics <span class="tag y">§03</span></li>
+    <li><b>Policy engine</b> stratified (user/project/org), declarative and versioned <span class="tag y">§03</span></li>
+    <li><b>Context budget</b>: summarization + priority eviction + staged loading <span class="tag y">§03</span></li>
+  </ul>
+
+  <h4>Pluggability & infrastructure</h4>
+  <ul class="check">
+    <li><b>4 interface contracts</b>: ModelProvider, SandboxBackend, Toolset/MCP, Frontend gateway <span class="tag a">§04</span></li>
+    <li><b>Ephemeral sandbox per session</b> bound to userId, with TTL + idempotent destroy <span class="tag a">§05</span></li>
+    <li><b>6 isolation layers</b>: identity, compute, fs, network, resources, time <span class="tag a">§05</span></li>
+    <li><b>mTLS transport</b> + scoped tokens + workload identity (SPIFFE) <span class="tag a">§06</span></li>
+    <li><b>Selectable backend</b> by config: <code>kubernetes-pod</code> | <code>firecracker-vm</code> | <code>docker-gvisor</code> | <code>daytona</code> <span class="tag a">§07</span></li>
+  </ul>
+
+  <h4>Governance</h4>
+  <ul class="check">
+    <li><b>Review gates</b> + provenance + deterministic rollback + regression testing <span class="tag r">§08</span></li>
+    <li><b>Defense against the Lethal Trifecta</b>: break data+communication+unconstrained execution <span class="tag r">§08</span></li>
+    <li><b>Secret redaction</b> in logs and traces before persisting <span class="tag r">§06·08</span></li>
+  </ul>
+
+  <div class="callout tip">
+    <span class="lbl">Suggested next step</span>
+    Start with the <b>4 interface contracts</b> (§04) using trivial implementations (sandbox = local Docker, model = one provider, frontend = CLI). With the contracts in place, you can swap each piece — including the entire harness — without rewriting the rest. Then harden isolation (gVisor → Firecracker) and transport (mTLS) before opening up to multiple users.
+  </div>
+</section>
+
+<footer>
+  <p><strong>Sources:</strong> Zhou et al., <i>“Externalization in LLM Agents: A Unified Review of Memory, Skills, Protocols and Harness Engineering”</i>, arXiv:2604.08224v1 (2026) — especially §6 (Harness Engineering), §7 (Cross-Cutting Analysis) and §8 (Future Discussion). Pluggable architecture patterns adapted from NousResearch/hermes-agent (toolset system, terminal backends, gateway process, model-agnostic design).</p>
+  <p style="margin-top:14px;color:var(--txt-3)">Guide produced for building your own harness · multi-tenant · Kubernetes/VM · pluggable.</p>
+</footer>
+
+</div>
+</main>
+</div>
+</body>
+</html>
