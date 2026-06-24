@@ -4,6 +4,7 @@ from __future__ import annotations
 from .config import Config, load_config
 from .embeddings import Embedder
 from .loop import AgentLoop
+from .mcp_client import HttpMcpClient, McpClient, ingest_server
 from .memory import Memory
 from .observer import Observer
 from .provider import Provider, build_provider
@@ -53,3 +54,28 @@ class Harness:
         self.repo.close_session(session.id)
         self.sandbox.destroy(session.id)
         return self.inducer.on_session_closed(session)
+
+    # ---- MCP wiring: index a server's tools and enable dispatch ----
+    def add_mcp_stdio(self, command: list[str], name: str) -> McpClient:
+        """Connect a local stdio MCP server (subprocess)."""
+        client = McpClient(command, name)
+        client.start()
+        n = ingest_server(self.repo, client)
+        self.tools.mcp_clients[client.name] = client
+        self.observer.log(None, None, "mcp_connected",
+                          {"server": client.name, "transport": "stdio", "tools": n})
+        return client
+
+    def add_mcp_http(self, url: str, name: str = "",
+                     headers: dict | None = None) -> HttpMcpClient:
+        """Connect a remote Streamable-HTTP MCP server.
+
+        Pass headers for auth, e.g. {"Authorization": f"Bearer {token}"}.
+        """
+        client = HttpMcpClient(url, name, headers=headers)
+        client.start()
+        n = ingest_server(self.repo, client)
+        self.tools.mcp_clients[client.name] = client
+        self.observer.log(None, None, "mcp_connected",
+                          {"server": client.name, "transport": "http", "tools": n})
+        return client

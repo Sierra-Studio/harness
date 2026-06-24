@@ -72,7 +72,7 @@ harness/
   repository.py    # Repository contract + InMemory + Postgres(pgvector)
   provider.py      # Provider contract + OpenRouter + FakeProvider
   sandbox.py       # SandboxBackend contract + local-subprocess impl
-  mcp_client.py    # minimal MCP stdio JSON-RPC client + tool ingestion
+  mcp_client.py    # MCP clients: stdio + Streamable-HTTP, + tool ingestion
   memory.py        # budget, build_window, chained summarize, checkpoints
   tools.py         # built-ins + Index Tool dispatch
   skills.py        # induction (every N sessions, deduped)
@@ -99,19 +99,26 @@ Harness(cfg, repo=PostgresRepository(dsn))       # forced backend
 
 ## Connecting MCP servers
 
+Two transports, one-line helpers on `Harness` — both index the server's tools
+into `tool_index` and enable dispatch:
+
 ```python
-from harness.mcp_client import McpClient, ingest_server
-client = McpClient(["my-mcp-server", "--stdio"], name="mymcp")
-client.start()
-ingest_server(harness.repo, client)          # -> tool_index (stored in Postgres)
-harness.tools.mcp_clients["mymcp"] = client  # enable dispatch
+h = Harness()
+
+# local stdio server (subprocess)
+h.add_mcp_stdio(["npx", "-y", "@modelcontextprotocol/server-filesystem", "/tmp"],
+                name="fs")
+
+# remote Streamable-HTTP server (pass headers for auth)
+h.add_mcp_http("https://fellow.app/mcp", name="fellow",
+               headers={"Authorization": f"Bearer {token}"})
 ```
 The model finds these tools through `SearchTools` (keyword/full-text search over
-`tool_index`), never via the prompt.
+`tool_index`), never via the prompt. See `examples/add_fellow_mcp.py`.
 
 ## Status / notes
 
-- Core logic verified by `tests/test_core.py` (10/10) and `demo.py`.
+- Core logic verified by `tests/test_core.py` (12/12) and `demo.py`.
 - Validated end-to-end against **real Postgres + pgvector** (repository, vector
   `SearchTools`, summarization, checkpoints, induction, token accounting).
 - OpenRouter integration verified up to billing: the harness authenticates,

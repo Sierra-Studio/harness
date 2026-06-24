@@ -141,6 +141,69 @@ def test_search_tools_keyword_match():
     assert "read_file" not in out["content"]   # keyword search excludes non-matches
 
 
+def test_http_mcp_sse_parser():
+    from harness.mcp_client import HttpMcpClient
+    lines = [
+        "event: message",
+        'data: {"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18"}}',
+        "",
+        ": keep-alive comment",
+        'data: {"jsonrpc":"2.0","id":2,"result":{"tools":[]}}',
+    ]
+    msg = HttpMcpClient._find_response_in_sse(iter(lines), 2)
+    assert msg is not None and msg["id"] == 2 and msg["result"]["tools"] == []
+    assert HttpMcpClient._find_response_in_sse(iter(lines), 99) is None
+
+
+def test_http_mcp_call_via_stub_transport():
+    """End-to-end dispatch of an HTTP MCP tool using a stubbed httpx client."""
+    from harness.mcp_client import HttpMcpClient, ingest_server
+    p = FakeProvider(context_window=4000)
+    h = _harness(p)
+
+    class StubResp:
+        def __init__(self, payload):
+            self._payload = payload
+            self.headers = {"content-type": "application/json"}
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def raise_for_status(self): pass
+        def read(self): import json; return json.dumps(self._payload)
+
+    class StubHttp:
+        def stream(self, method, url, json, headers):
+            m = json["method"]
+            if m == "initialize":
+                return StubResp({"jsonrpc": "2.0", "id": json["id"],
+                                 "result": {"protocolVersion": "2025-06-18"}})
+            if m == "tools/list":
+                return StubResp({"jsonrpc": "2.0", "id": json["id"], "result": {
+                    "tools": [{"name": "get_meetings",
+                               "description": "List recent meetings", "inputSchema": {}}]}})
+            if m == "tools/call":
+                return StubResp({"jsonrpc": "2.0", "id": json["id"],
+                                 "result": {"meetings": ["standup"]}})
+            return StubResp({"jsonrpc": "2.0", "id": json["id"], "result": {}})
+        def post(self, url, json, headers): pass  # notifications
+        def close(self): pass
+
+    client = HttpMcpClient("https://example.test/mcp", name="stub")
+    client._client = StubHttp()                       # inject stub transport
+    client._notify("notifications/initialized", {})   # no-op
+    ingest_server(h.repo, client)
+    h.tools.mcp_clients["stub"] = client
+
+    s = h.start_session("u1")
+    # found via keyword search
+    found = h.tools.dispatch(s, {"id": "1", "function": {
+        "name": "SearchTools", "arguments": '{"query": "recent meetings"}'}})
+    assert "get_meetings" in found["content"]
+    # dispatched through the HTTP client
+    out = h.tools.dispatch(s, {"id": "2", "function": {
+        "name": "get_meetings", "arguments": "{}"}})
+    assert "standup" in out["content"]
+
+
 if __name__ == "__main__":
     import traceback
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
