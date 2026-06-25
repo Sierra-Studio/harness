@@ -17,11 +17,14 @@ class ToolRegistry:
     BUILTINS = ("SearchTools", "GetTools", "GetSkills", "Bash")
 
     def __init__(self, repo: Repository, embedder: Embedder, sandbox: SandboxBackend,
-                 mcp_clients: Optional[dict] = None):
+                 mcp_clients: Optional[dict] = None, *, bash_timeout: int = 60,
+                 bash_max_output: int = 10_000):
         self.repo = repo
         self.embedder = embedder
         self.sandbox = sandbox
         self.mcp_clients = mcp_clients or {}   # name -> McpClient
+        self.bash_timeout = bash_timeout
+        self.bash_max_output = bash_max_output
 
     # ---- specs sent to the model (only the 4 built-ins) ----
     def builtin_specs(self) -> list[dict]:
@@ -41,8 +44,21 @@ class ToolRegistry:
             fn("GetSkills", "List or recall the current user's saved skills "
                "(reusable procedures). Optionally filter by a query.",
                {"query": {"type": "string"}}, []),
-            fn("Bash", "Run a shell command inside the session sandbox.",
-               {"command": {"type": "string"}}, ["command"]),
+            fn("Bash",
+               "Run a shell command in your per-session sandbox. This is your "
+               "UNIVERSAL FALLBACK: use it whenever no specialized tool fits the "
+               "task but the operating system can solve it — file and text "
+               "operations, git, curl/HTTP, package managers, running code or "
+               "scripts, data wrangling, system inspection, and more. Prefer a "
+               "purpose-built tool (via SearchTools) when one clearly fits; "
+               "otherwise reach for Bash instead of giving up. The working "
+               "directory persists across calls; exported env vars do not (prefix "
+               "inline: VAR=value cmd). Returns exit code, stdout and stderr.",
+               {"command": {"type": "string",
+                            "description": "The shell command to execute."},
+                "timeout": {"type": "integer",
+                            "description": "Optional per-command timeout in seconds."}},
+               ["command"]),
         ]
 
     # ---- dispatch ----
@@ -109,11 +125,21 @@ class ToolRegistry:
                           ensure_ascii=False)
 
     def _bash(self, session: Session, args: dict) -> str:
-        res = self.sandbox.exec(session.id, args.get("command", ""))
-        out = res.stdout
+        command = args.get("command", "")
+        if not command.strip():
+            return "ERROR: empty command."
+        try:
+            timeout = int(args.get("timeout") or self.bash_timeout)
+        except (TypeError, ValueError):
+            timeout = self.bash_timeout
+        res = self.sandbox.exec(session.id, command, timeout=timeout)
+        parts = [f"<exit_code>{res.exit_code}</exit_code>"]
+        if res.cwd:
+            parts.append(f"<cwd>{res.cwd}</cwd>")
+        parts.append(f"<stdout>\n{res.stdout}\n</stdout>")
         if res.stderr:
-            out += f"\n[stderr]\n{res.stderr}"
-        return f"(exit {res.exit_code})\n{out}".strip()
+            parts.append(f"<stderr>\n{res.stderr}\n</stderr>")
+        return "\n".join(parts)
 
     def _index_tool(self, name: str, args: dict) -> str:
         spec = self.repo.get_tool(name)

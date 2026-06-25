@@ -74,6 +74,11 @@ class Config:
     summary_keep_ratio: float = _float("SUMMARY_KEEP_RATIO", 0.10)
     # fallback context window when the provider can't report one
     default_context_window: int = _int("DEFAULT_CONTEXT_WINDOW", 128_000)
+    # soul / persona: path to a SOUL.md (empty => look for ./SOUL.md, else default)
+    soul_path: str = os.environ.get("HARNESS_SOUL_PATH", "")
+    # bash tool
+    bash_timeout: int = _int("BASH_TIMEOUT", 60)            # per-command seconds
+    bash_max_output: int = _int("BASH_MAX_OUTPUT", 10_000)  # chars before head/tail elision
 
 
 def load_config() -> Config:

@@ -11,6 +11,7 @@ persistence backend are all swappable.
 
 | Component | Behaviour |
 |---|---|
+| **Soul** | Layered system prompt: a customizable persona (`SOUL.md`, like Hermes' SOUL) + built-in tool guidance. Falls back to a default identity when no SOUL.md is set. |
 | **Loop** | `perceive → build context → call model → run tools → repeat`, with a per-session **token-budget guard** that stops and returns the partial reply. |
 | **Memory** | Window = `system prompt + chained summary + active turns`. Budget = `context_window − system_prompt − response_reserve`. On overflow: keep the last 10% verbatim, fold the rest (plus the previous summary) into a new **chained** summary. Folded turns stay in Postgres (`in_window=false`). |
 | **Checkpoints** | Every 20 **user** turns, the subject is classified in a few words. |
@@ -18,6 +19,7 @@ persistence backend are all swappable.
 | **Skills** | Owned per user. Every 10 closed sessions, an induction pass mines recurring requests into new skills (deduped by embedding). |
 | **Provider** | OpenRouter: model context window from `/models`, chat completions with tool calling, real `usage` recorded per turn. |
 | **Observability** | One `step_logs` row per loop step; `tokens_in/out` on every model turn; live totals on the session. |
+| **Bash tool** | The agent's **universal fallback**: used whenever no specialized tool fits but the OS can do the job. Working directory **persists across calls** within a session; structured output (exit code / cwd / stdout / stderr); large output is head/tail-elided. Configurable timeout. |
 | **Bash sandbox** | Runs behind a pluggable `SandboxBackend`. Ships with a local-subprocess impl (one workdir per session). Swap for gVisor/Firecracker/K8s for real isolation. |
 
 ## Quickstart (uv)
@@ -55,17 +57,33 @@ DATABASE_URL="" OPENROUTER_API_KEY="" uv run harness chat
 > Not using uv? The core still runs with plain `python` (e.g. `python -m harness.cli chat`);
 > install deps however you like — they're declared in `pyproject.toml`.
 
+## Soul (persona)
+
+The system prompt is assembled in layers: a **persona** first, then the harness's
+tool guidance (which tells the agent to treat **Bash as its universal fallback** —
+use it whenever no specialized tool fits but the OS can solve the task).
+
+Set the persona by creating a `SOUL.md` (copy `SOUL.md.example`), or point
+`HARNESS_SOUL_PATH` at one, or pass it in code:
+```python
+Harness(soul="You are Atlas, a terse senior SRE. You think in shell commands.")
+```
+An empty or comment-only `SOUL.md` falls back to a built-in default identity. Pass
+`system_prompt=...` to bypass the layered assembly entirely.
+
 ## Configuration
 
 All via env (see `.env.example`): model, budgets, `RESPONSE_RESERVE_TOKENS`,
 `MAX_STEPS`, `CHECKPOINT_EVERY_USER_TURNS`, `SKILL_INDUCTION_EVERY_SESSIONS`,
-`SUMMARY_KEEP_RATIO`, `EMBEDDING_*`.
+`SUMMARY_KEEP_RATIO`, `EMBEDDING_*`, `HARNESS_SOUL_PATH`, `BASH_TIMEOUT`,
+`BASH_MAX_OUTPUT`.
 
 ## Project layout
 
 ```
 harness/
   config.py        # env-driven settings (+ tiny .env loader)
+  prompt.py        # Soul: layered system prompt (SOUL.md + tool guidance)
   tokenizer.py     # tiktoken with heuristic fallback
   embeddings.py    # OpenAI-compatible embeddings + local fallback
   models.py        # dataclasses mirroring the schema
@@ -132,8 +150,8 @@ skipped) and disconnects them on exit. OAuth tokens are cached under
 
 ## Status / notes
 
-- Core logic verified by `tests/test_core.py` (18/18) and `demo.py`.
-- Validated end-to-end against **real Postgres + pgvector** (repository, vector
+- Core logic verified by `tests/test_core.py` (24/24) and `demo.py`.
+- Validated end-to-end against **real Postgres + pgvector** (repository, full-text
   `SearchTools`, summarization, checkpoints, induction, token accounting).
 - OpenRouter integration verified up to billing: the harness authenticates,
   pulls the model context window, and forms valid chat requests. A live

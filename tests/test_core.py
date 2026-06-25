@@ -70,6 +70,70 @@ def test_budget_guard_returns_partial():
     assert h.repo.get_session(s.id).status == "budget_exhausted"
 
 
+def test_soul_default_and_custom():
+    from harness.prompt import build_system_prompt, load_soul, DEFAULT_IDENTITY
+    # comment-only / empty -> default identity
+    assert load_soul(explicit="<!-- just a comment -->") == DEFAULT_IDENTITY
+    assert load_soul(explicit="   ") == DEFAULT_IDENTITY
+    # explicit persona wins and tool guidance (incl. Bash policy) is appended
+    sp = build_system_prompt(soul="You are Atlas, a terse SRE.")
+    assert "Atlas" in sp
+    assert "Bash" in sp and "fallback" in sp.lower()
+
+
+def test_soul_loaded_from_file(tmp_path):
+    from harness.prompt import build_system_prompt
+    soul = tmp_path / "SOUL.md"
+    soul.write_text("<!-- header -->\nYou are Nyx, a poetic assistant.")
+    sp = build_system_prompt(str(soul))
+    assert "Nyx" in sp and "poetic" in sp
+
+
+def test_harness_uses_soul():
+    import dataclasses
+    from harness.app import Harness
+    from harness.config import Config
+    p = FakeProvider(context_window=4000)
+    h = Harness(dataclasses.replace(Config(), database_url=""),
+                soul="You are Atlas.", provider=p)
+    assert "Atlas" in h.loop.system_prompt
+
+
+def test_bash_cwd_persists_across_calls():
+    import json
+    p = FakeProvider(context_window=4000)
+    h = _harness(p)
+    s = h.start_session("u1")
+
+    def bash(cmd):
+        return h.tools.dispatch(s, {"id": "x", "function": {
+            "name": "Bash", "arguments": json.dumps({"command": cmd})}})["content"]
+
+    bash("mkdir -p a/b && cd a/b")
+    out = bash("pwd")
+    assert out.count("a/b") >= 1 and "<exit_code>0</exit_code>" in out
+
+
+def test_bash_reports_exit_and_stderr():
+    import json
+    p = FakeProvider(context_window=4000)
+    h = _harness(p)
+    s = h.start_session("u1")
+    out = h.tools.dispatch(s, {"id": "x", "function": {
+        "name": "Bash", "arguments": json.dumps({"command": "ls /no/such/path"})}})["content"]
+    assert "<exit_code>" in out and "<exit_code>0</exit_code>" not in out
+    assert "<stderr>" in out
+
+
+def test_bash_truncates_large_output():
+    from harness.sandbox import LocalSubprocessSandbox
+    sb = LocalSubprocessSandbox(max_output=500)
+    res = sb.exec("sess", "for i in $(seq 1 2000); do echo line-$i; done")
+    assert "characters elided" in res.stdout
+    assert len(res.stdout) < 800
+    sb.destroy("sess")
+
+
 def test_unlimited_token_budget():
     p = FakeProvider(context_window=4000)
     # would-be expensive run: many tool calls, but budget 0 == no limit

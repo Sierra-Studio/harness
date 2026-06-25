@@ -7,24 +7,17 @@ from .loop import AgentLoop
 from .mcp_client import HttpMcpClient, McpClient, ingest_server
 from .memory import Memory
 from .observer import Observer
+from .prompt import build_system_prompt
 from .provider import Provider, build_provider
 from .repository import Repository, build_repository
 from .sandbox import LocalSubprocessSandbox, SandboxBackend
 from .skills import SkillInducer
 from .tools import ToolRegistry
 
-DEFAULT_SYSTEM_PROMPT = (
-    "You are a capable assistant running inside a harness. You have four built-in "
-    "tools: SearchTools (find external tools by description), GetTools (fetch a "
-    "tool's schema), GetSkills (recall the user's saved procedures), and Bash (run "
-    "shell commands in your sandbox). Prefer SearchTools over guessing tool names. "
-    "Be concise."
-)
-
 
 class Harness:
     def __init__(self, cfg: Config | None = None, *, system_prompt: str = "",
-                 echo: bool = False, repo: Repository | None = None,
+                 soul: str = "", echo: bool = False, repo: Repository | None = None,
                  provider: Provider | None = None,
                  sandbox: SandboxBackend | None = None,
                  mcp_clients: dict | None = None):
@@ -32,16 +25,22 @@ class Harness:
         self.repo = repo or build_repository(self.cfg)
         self.provider = provider or build_provider(self.cfg)
         self.embedder = Embedder(self.cfg)
-        self.sandbox = sandbox or LocalSubprocessSandbox()
+        self.sandbox = sandbox or LocalSubprocessSandbox(
+            max_output=self.cfg.bash_max_output)
         self.observer = Observer(self.repo, echo=echo)
         self.tools = ToolRegistry(self.repo, self.embedder, self.sandbox,
-                                  mcp_clients or {})
+                                  mcp_clients or {},
+                                  bash_timeout=self.cfg.bash_timeout,
+                                  bash_max_output=self.cfg.bash_max_output)
         self.memory = Memory(self.repo, self.provider, self.cfg, self.observer)
         self.inducer = SkillInducer(self.repo, self.provider, self.embedder,
                                     self.cfg, self.observer)
+        # System prompt: explicit override wins; otherwise assemble the layered
+        # Soul (SOUL.md / default identity + tool guidance, incl. Bash policy).
+        prompt = system_prompt or build_system_prompt(
+            self.cfg.soul_path, soul=soul)
         self.loop = AgentLoop(self.cfg, self.repo, self.provider, self.memory,
-                              self.tools, self.observer,
-                              system_prompt or DEFAULT_SYSTEM_PROMPT)
+                              self.tools, self.observer, prompt)
 
     # convenience pass-throughs
     def start_session(self, external_id: str, model: str = ""):
