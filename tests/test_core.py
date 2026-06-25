@@ -9,7 +9,6 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from harness.app import Harness
 from harness.config import Config
-from harness.embeddings import Embedder, cosine
 from harness.provider import FakeProvider
 from harness.tokenizer import count_tokens
 
@@ -27,12 +26,68 @@ def test_tokenizer_monotonic():
     assert count_tokens({"role": "user", "content": "hi"}) >= 1
 
 
-def test_embeddings_self_similarity():
-    emb = Embedder(Config())
-    a = emb.embed("send an email to the customer")
-    b = emb.embed("send an email to the customer")
-    c = emb.embed("compile a rust binary")
-    assert cosine(a, b) > cosine(a, c)
+def test_search_skills_keyword_and_get_skill():
+    p = FakeProvider(context_window=4000)
+    h = _harness(p)
+    uid = h.repo.get_or_create_user("u1").id
+    h.repo.add_skill(uid, "deploy_web", "Ship the web app",
+                     "1. run tests\n2. push to prod", "authored")
+    h.repo.add_skill(uid, "rotate_keys", "Rotate API credentials",
+                     "1. mint new key\n2. revoke old", "authored")
+    s = h.start_session("u1")
+    # SearchSkills returns name + summary only (progressive disclosure)
+    found = h.tools.dispatch(s, {"id": "1", "function": {
+        "name": "SearchSkills", "arguments": '{"query": "credentials"}'}})["content"]
+    assert "rotate_keys" in found and "deploy_web" not in found
+    assert "mint new key" not in found            # body is NOT in the summary view
+    # GetSkill returns the full body by name
+    body = h.tools.dispatch(s, {"id": "2", "function": {
+        "name": "GetSkill", "arguments": '{"name": "rotate_keys"}'}})["content"]
+    assert "mint new key" in body and "revoke old" in body
+    # unknown name is handled gracefully
+    miss = h.tools.dispatch(s, {"id": "3", "function": {
+        "name": "GetSkill", "arguments": '{"name": "nope"}'}})["content"]
+    assert "not found" in miss.lower()
+
+
+def test_skills_injected_into_prompt_per_user():
+    import datetime
+    p = FakeProvider(context_window=4000)
+    h = _harness(p)
+    alice = h.repo.get_or_create_user("alice").id
+    h.repo.add_skill(alice, "deploy_web", "Ship the web app to prod",
+                     "1. run tests\n2. push to prod", "authored")
+    sa = h.start_session("alice")
+    p.queue(content="ok")
+    h.run_turn(sa, "hi")
+    sys_msg = p.calls[-1][0]["content"]
+    # catalog lists name + summary...
+    assert "deploy_web" in sys_msg and "Ship the web app to prod" in sys_msg
+    # ...but NOT the body (steps)
+    assert "run tests" not in sys_msg
+    # placed after the stable base prompt, before the volatile date (caching):
+    # base ("sys.") < catalog heading < today's date
+    assert sys_msg.index("sys.") < sys_msg.index("# Your saved skills")
+    assert sys_msg.index("# Your saved skills") < sys_msg.index("Today's date is")
+    assert sys_msg.rstrip().endswith(
+        f"Today's date is {datetime.date.today().isoformat()}.")
+    # a different tenant with no skills gets no catalog (isolation)
+    sb = h.start_session("bob")
+    p.queue(content="ok")
+    h.run_turn(sb, "hi")
+    assert "deploy_web" not in p.calls[-1][0]["content"]
+    assert "# Your saved skills" not in p.calls[-1][0]["content"]
+
+
+def test_skills_block_truncates_above_limit():
+    from harness.prompt import skills_block
+    from harness.models import Skill
+    skills = [Skill(id=str(i), user_id="u", name=f"s{i}", summary="x", body="b")
+              for i in range(35)]
+    block = skills_block(skills, limit=30)
+    assert "s0:" in block and "s29:" in block
+    assert "s30:" not in block            # beyond the limit
+    assert "5 more not shown" in block and "SearchSkills" in block
 
 
 def test_loop_basic_reply():

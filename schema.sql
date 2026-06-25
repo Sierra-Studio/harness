@@ -1,6 +1,4 @@
--- Harness schema (Postgres + pgvector).
--- {{EMBEDDING_DIM}} is substituted by `python -m harness.cli init-db` from EMBEDDING_DIM.
-CREATE EXTENSION IF NOT EXISTS vector;
+-- Harness schema (Postgres).
 CREATE EXTENSION IF NOT EXISTS pgcrypto;  -- gen_random_uuid()
 CREATE EXTENSION IF NOT EXISTS unaccent;  -- accent-insensitive tool search
 
@@ -69,6 +67,7 @@ CREATE TABLE IF NOT EXISTS checkpoints (
 );
 
 -- Skills owned by a user (authored or induced).
+-- Searched by keyword (Postgres full-text), no embeddings.
 CREATE TABLE IF NOT EXISTS skills (
   id         uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   user_id    uuid NOT NULL REFERENCES users(id),
@@ -76,10 +75,12 @@ CREATE TABLE IF NOT EXISTS skills (
   summary    text NOT NULL,
   body       text NOT NULL,
   origin     text NOT NULL DEFAULT 'induced',  -- authored | induced
-  embedding  vector({{EMBEDDING_DIM}}),
   created_at timestamptz DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_skills_user ON skills(user_id);
+-- GIN index backing the full-text SearchSkills query.
+CREATE INDEX IF NOT EXISTS idx_skills_fts ON skills
+  USING gin (to_tsvector('english', name || ' ' || summary || ' ' || body));
 
 -- Index of Index Tools (from MCP). NOT injected into the system prompt.
 -- Searched by keyword (Postgres full-text), no embeddings.

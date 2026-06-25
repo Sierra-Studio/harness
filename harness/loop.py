@@ -10,7 +10,7 @@ from .config import Config
 from .memory import Memory
 from .models import Session
 from .observer import Observer
-from .prompt import with_today
+from .prompt import skills_block, with_today
 from .provider import Provider
 from .repository import Repository
 from .tools import ToolRegistry
@@ -48,10 +48,16 @@ class AgentLoop:
         self.memory.append(session, "user", user_message)
         self.memory.maybe_checkpoint(session)
 
-        # Volatile date layer: always today's date, appended fresh per turn so it
-        # stays current without being frozen at construction. Same string all day
-        # keeps the upstream prompt cache warm.
-        prompt = with_today(self.system_prompt)
+        # Prompt layers, ordered for cache friendliness:
+        #   [ global system prompt ]  <- identical across users; cacheable prefix
+        #   [ this user's skills   ]  <- per-user catalog (name + summary only)
+        #   [ today's date         ]  <- volatile; appended last so the rest stays stable
+        # The per-user catalog is re-read each turn so skills added mid-session
+        # appear immediately. Bodies are NOT injected — loaded via GetSkill.
+        catalog = skills_block(self.repo.list_skills(session.user_id),
+                               self.cfg.skills_in_prompt_limit)
+        base = self.system_prompt + (f"\n\n{catalog}" if catalog else "")
+        prompt = with_today(base)
 
         final_text = ""
         for step in range(self.cfg.max_steps):

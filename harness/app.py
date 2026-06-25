@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 from .config import Config, load_config
-from .embeddings import Embedder
 from .loop import AgentLoop
 from .mcp_client import HttpMcpClient, McpClient, ingest_server
 from .memory import Memory
@@ -24,16 +23,15 @@ class Harness:
         self.cfg = cfg or load_config()
         self.repo = repo or build_repository(self.cfg)
         self.provider = provider or build_provider(self.cfg)
-        self.embedder = Embedder(self.cfg)
         self.sandbox = sandbox or LocalSubprocessSandbox(
             max_output=self.cfg.bash_max_output)
         self.observer = Observer(self.repo, echo=echo)
-        self.tools = ToolRegistry(self.repo, self.embedder, self.sandbox,
+        self.tools = ToolRegistry(self.repo, self.sandbox,
                                   mcp_clients or {},
                                   bash_timeout=self.cfg.bash_timeout,
                                   bash_max_output=self.cfg.bash_max_output)
         self.memory = Memory(self.repo, self.provider, self.cfg, self.observer)
-        self.inducer = SkillInducer(self.repo, self.provider, self.embedder,
+        self.inducer = SkillInducer(self.repo, self.provider,
                                     self.cfg, self.observer)
         # System prompt: explicit override wins; otherwise assemble the layered
         # Soul (SOUL.md / default identity + tool guidance, incl. Bash policy).

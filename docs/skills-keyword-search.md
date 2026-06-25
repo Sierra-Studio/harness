@@ -1,6 +1,11 @@
 # Skills: drop vector search, fetch bodies, mirror the tools pattern
 
-Reference for an implementation pass on `harness/`. Not yet applied.
+**Status: IMPLEMENTED.** Built as described below, with one naming change:
+`GetSkills` was **renamed to `SearchSkills`** (discovery) and a new `GetSkill`
+(retrieval) was added — so skills now mirror `SearchTools`/`GetTools` in both
+mechanism and naming. The embedding pipeline was removed entirely
+(`harness/embeddings.py` deleted; `EMBEDDING_*` config and the pgvector schema
+column gone). All 26 tests pass.
 
 ## Problem
 

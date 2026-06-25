@@ -32,7 +32,7 @@ DEFAULT_IDENTITY = (
 # powerful fallback whenever no specific tool fits but the OS can do the job.
 TOOL_GUIDANCE = (
     "# Your tools\n"
-    "You have four always-available built-in tools, plus external tools you can "
+    "You have six always-available built-in tools, plus external tools you can "
     "discover on demand:\n"
     "- SearchTools(query): keyword-search the catalog of external tools (from MCP "
     "servers). Use it to find a tool by describing what you need.\n"
@@ -41,12 +41,18 @@ TOOL_GUIDANCE = (
     "- CallTool(name, arguments): actually RUN an external tool. External tools "
     "are NOT callable directly by name — CallTool is the only way to invoke one. "
     "The flow is always SearchTools -> GetTools -> CallTool.\n"
-    "- GetSkills(query): recall the user's saved skills (reusable procedures).\n"
+    "- GetSkill(name): load the full steps of one saved skill (from the \"Your "
+    "saved skills\" list below, when present) before following it.\n"
+    "- SearchSkills(query): keyword-search saved skills — only needed when the "
+    "list below is truncated or you want to search a large set; returns name + "
+    "summary for each.\n"
     "- Bash(command): run a shell command in your per-session sandbox.\n"
     "\n"
     "# Choosing a tool — Bash is your universal fallback\n"
     "Follow this order on every action:\n"
-    "1. If one of your skills already covers the task, follow it (GetSkills).\n"
+    "1. If one of your saved skills (listed under \"Your saved skills\", when "
+    "present) covers the task, load its steps with GetSkill(name) and follow "
+    "them.\n"
     "2. Otherwise, if a specialized external tool likely exists, find it with "
     "SearchTools and call it — a purpose-built tool beats a raw shell command. "
     "Query in ENGLISH with broad capability terms and synonyms (the tool catalog "
@@ -140,6 +146,36 @@ def build_system_prompt(soul_path: str = "", *, soul: str = "",
     if _meaningful(extra):
         layers.append(extra.strip())
     return "\n\n".join(layers)
+
+
+def skills_block(skills: list, limit: int = 30) -> str:
+    """Render the per-user skill catalog for injection into the system prompt.
+
+    Only name + summary are listed — NOT the bodies (steps). The model loads a
+    skill's body on demand via GetSkill. Returns '' when the user has no skills,
+    so the caller injects nothing. If the catalog exceeds `limit`, only the
+    first `limit` are shown and the model is pointed at SearchSkills for the
+    rest (the hybrid: small catalog in-prompt, long tail searched on demand).
+
+    Placed AFTER the stable global prompt layers so the shared identity / tool
+    guidance prefix stays cacheable across users; only this small per-user block
+    (plus the volatile date) follows it.
+    """
+    if not skills:
+        return ""
+    shown = skills[:limit]
+    lines = [f"- {s.name}: {s.summary}" for s in shown]
+    body = "\n".join(lines)
+    if len(skills) > limit:
+        body += (f"\n…and {len(skills) - limit} more not shown — use "
+                 "SearchSkills(query) to find them.")
+    return (
+        "# Your saved skills\n"
+        "Reusable procedures saved for this user. If one fits the task, call "
+        "GetSkill(name) to load its full steps, then follow them. Only the name "
+        "and one-line summary are shown here; the steps live in the body.\n"
+        f"{body}"
+    )
 
 
 def today_line(today: Optional[_date] = None) -> str:

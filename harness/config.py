@@ -58,19 +58,15 @@ class Config:
     )
     # database — empty => in-memory repository
     database_url: str = os.environ.get("DATABASE_URL", "")
-    # embeddings
-    embedding_api_key: str = os.environ.get("EMBEDDING_API_KEY", "")
-    embedding_base_url: str = os.environ.get(
-        "EMBEDDING_BASE_URL", "https://api.openai.com/v1"
-    )
-    embedding_model: str = os.environ.get("EMBEDDING_MODEL", "text-embedding-3-small")
-    embedding_dim: int = _int("EMBEDDING_DIM", 1536)
     # budgets / loop
     token_budget_per_session: int = _budget("TOKEN_BUDGET_PER_SESSION", 500_000)  # 0 = unlimited
     response_reserve_tokens: int = _int("RESPONSE_RESERVE_TOKENS", 4_000)
     max_steps: int = _int("MAX_STEPS", 25)
     checkpoint_every_user_turns: int = _int("CHECKPOINT_EVERY_USER_TURNS", 20)
     skill_induction_every_sessions: int = _int("SKILL_INDUCTION_EVERY_SESSIONS", 10)
+    # max skills listed in the system prompt; above this, the model falls back
+    # to SearchSkills for the long tail (the hybrid).
+    skills_in_prompt_limit: int = _int("SKILLS_IN_PROMPT_LIMIT", 30)
     summary_keep_ratio: float = _float("SUMMARY_KEEP_RATIO", 0.10)
     # fallback context window when the provider can't report one
     default_context_window: int = _int("DEFAULT_CONTEXT_WINDOW", 128_000)

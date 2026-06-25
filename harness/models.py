@@ -1,7 +1,7 @@
 """Dataclasses mirroring the Postgres schema."""
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Optional
 
@@ -56,7 +56,6 @@ class Skill:
     summary: str
     body: str
     origin: str = "induced"  # authored | induced
-    embedding: list[float] = field(default_factory=list)
 
 
 @dataclass

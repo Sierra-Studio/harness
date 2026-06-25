@@ -2,8 +2,11 @@
 
     uv run harness init-db     # create schema in DATABASE_URL
     uv run harness chat        # interactive session (uses OpenRouter if configured)
+    uv run harness add-skill <user_id> <name> <summary> [body]
+                               # author a skill (body read from stdin if omitted)
+    uv run harness list-skills <user_id>
 
-(or without uv:  python -m harness.cli init-db | chat)
+(or without uv:  python -m harness.cli init-db | chat | ...)
 """
 from __future__ import annotations
 
@@ -22,11 +25,43 @@ def init_db() -> int:
     import psycopg
 
     schema = (Path(__file__).resolve().parent.parent / "schema.sql").read_text()
-    schema = schema.replace("{{EMBEDDING_DIM}}", str(cfg.embedding_dim))
     with psycopg.connect(cfg.database_url, autocommit=True) as conn:
         with conn.cursor() as cur:
             cur.execute(schema)
-    print(f"Schema applied to {cfg.database_url} (embedding_dim={cfg.embedding_dim}).")
+    print(f"Schema applied to {cfg.database_url}.")
+    return 0
+
+
+def add_skill(argv: list[str]) -> int:
+    """author a skill: add-skill <user_id> <name> <summary> [body]
+    If body is omitted, it is read from stdin (so you can pipe or heredoc it)."""
+    if len(argv) < 5:
+        print("usage: harness add-skill <user_id> <name> <summary> [body]")
+        return 1
+    user_id, name, summary = argv[2], argv[3], argv[4]
+    body = argv[5] if len(argv) > 5 else sys.stdin.read()
+    if not body.strip():
+        print("ERROR: empty body (provide as arg or via stdin).")
+        return 1
+    h = Harness(load_config())
+    uid = h.repo.get_or_create_user(user_id).id
+    skill = h.repo.add_skill(uid, name, summary, body.strip(), "authored")
+    print(f"Added skill '{skill.name}' for user '{user_id}' (id={skill.id}).")
+    return 0
+
+
+def list_skills(argv: list[str]) -> int:
+    if len(argv) < 3:
+        print("usage: harness list-skills <user_id>")
+        return 1
+    h = Harness(load_config())
+    uid = h.repo.get_or_create_user(argv[2]).id
+    skills = h.repo.list_skills(uid)
+    if not skills:
+        print(f"No skills for user '{argv[2]}'.")
+        return 0
+    for s in skills:
+        print(f"- {s.name} [{s.origin}] — {s.summary}")
     return 0
 
 
@@ -81,6 +116,10 @@ def main(argv: list[str]) -> int:
         return init_db()
     if cmd == "chat":
         return chat()
+    if cmd == "add-skill":
+        return add_skill(argv)
+    if cmd == "list-skills":
+        return list_skills(argv)
     print(__doc__)
     return 1
 

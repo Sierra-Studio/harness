@@ -2,7 +2,7 @@
 
 `Repository` is the abstract contract. Two implementations:
   - InMemoryRepository: dependency-free, used for dev / offline demo / tests.
-  - PostgresRepository: real persistence (psycopg + pgvector).
+  - PostgresRepository: real persistence (psycopg).
 
 The harness logic depends only on `Repository`, never on a concrete backend.
 """
@@ -14,7 +14,6 @@ import unicodedata
 import uuid
 from typing import Any, Optional
 
-from .embeddings import cosine
 from .models import Session, Skill, Summary, ToolSpec, Turn, User
 
 
@@ -85,14 +84,16 @@ class Repository(abc.ABC):
     @abc.abstractmethod
     def last_checkpoint_turn(self, session_id: str) -> int: ...
 
-    # --- skills ---
+    # --- skills (keyword search, no embeddings) ---
     @abc.abstractmethod
     def add_skill(self, user_id: str, name: str, summary: str, body: str,
-                  origin: str, embedding: list[float]) -> Skill: ...
+                  origin: str) -> Skill: ...
     @abc.abstractmethod
     def list_skills(self, user_id: str) -> list[Skill]: ...
     @abc.abstractmethod
-    def search_skills(self, user_id: str, embedding: list[float], k: int) -> list[Skill]: ...
+    def search_skills(self, user_id: str, query: str, k: int) -> list[Skill]: ...
+    @abc.abstractmethod
+    def get_skill(self, user_id: str, name: str) -> Optional[Skill]: ...
 
     # --- tool index (keyword search, no embeddings) ---
     @abc.abstractmethod
@@ -203,19 +204,34 @@ class InMemoryRepository(Repository):
                  if c["session_id"] == session_id]
         return max(items) if items else 0
 
-    def add_skill(self, user_id, name, summary, body, origin, embedding) -> Skill:
+    def add_skill(self, user_id, name, summary, body, origin) -> Skill:
         sk = Skill(id=_uuid(), user_id=user_id, name=name, summary=summary,
-                   body=body, origin=origin, embedding=embedding)
+                   body=body, origin=origin)
         self.skills.append(sk)
         return sk
 
     def list_skills(self, user_id) -> list[Skill]:
         return [s for s in self.skills if s.user_id == user_id]
 
-    def search_skills(self, user_id, embedding, k) -> list[Skill]:
+    def search_skills(self, user_id, query, k) -> list[Skill]:
         items = self.list_skills(user_id)
-        items.sort(key=lambda s: cosine(s.embedding, embedding), reverse=True)
-        return items[:k]
+        terms = set(_terms(query))
+        if not terms:
+            return items[:k]
+        scored: list[tuple[int, Skill]] = []
+        for s in items:
+            hay = f"{s.name} {s.summary} {s.body}".lower()
+            score = sum(1 for term in terms if term in hay)
+            if score:
+                scored.append((score, s))
+        scored.sort(key=lambda x: x[0], reverse=True)
+        return [s for _, s in scored[:k]]
+
+    def get_skill(self, user_id, name) -> Optional[Skill]:
+        for s in self.skills:
+            if s.user_id == user_id and s.name == name:
+                return s
+        return None
 
     def upsert_tool(self, mcp_server, name, description, input_schema) -> None:
         for t in self.tools:
@@ -256,7 +272,7 @@ class InMemoryRepository(Repository):
 # Postgres implementation
 # ---------------------------------------------------------------------------
 class PostgresRepository(Repository):
-    """psycopg3 + pgvector. Embeddings are stored as pgvector literals."""
+    """psycopg3. Skills and the tool index are searched via Postgres full-text."""
 
     def __init__(self, dsn: str) -> None:
         import psycopg  # local import; optional dependency
@@ -265,10 +281,6 @@ class PostgresRepository(Repository):
         self.conn = psycopg.connect(dsn, autocommit=True)
 
     # -- helpers --
-    @staticmethod
-    def _vec(embedding: list[float]) -> str:
-        return "[" + ",".join(repr(float(x)) for x in embedding) + "]"
-
     def _row(self, sql: str, params: tuple = ()):  # one row
         with self.conn.cursor() as cur:
             cur.execute(sql, params)
@@ -392,14 +404,14 @@ class PostgresRepository(Repository):
             "SELECT max(at_user_turn) FROM checkpoints WHERE session_id=%s", (session_id,))
         return r[0] or 0
 
-    # -- skills --
-    def add_skill(self, user_id, name, summary, body, origin, embedding) -> Skill:
+    # -- skills (Postgres full-text search, no embeddings) --
+    def add_skill(self, user_id, name, summary, body, origin) -> Skill:
         r = self._row(
-            """INSERT INTO skills(user_id,name,summary,body,origin,embedding)
-               VALUES(%s,%s,%s,%s,%s,%s) RETURNING id""",
-            (user_id, name, summary, body, origin, self._vec(embedding)))
+            """INSERT INTO skills(user_id,name,summary,body,origin)
+               VALUES(%s,%s,%s,%s,%s) RETURNING id""",
+            (user_id, name, summary, body, origin))
         return Skill(id=str(r[0]), user_id=user_id, name=name, summary=summary,
-                     body=body, origin=origin, embedding=embedding)
+                     body=body, origin=origin)
 
     def list_skills(self, user_id) -> list[Skill]:
         rows = self._rows(
@@ -407,13 +419,35 @@ class PostgresRepository(Repository):
         return [Skill(id=str(r[0]), user_id=user_id, name=r[1], summary=r[2],
                       body=r[3], origin=r[4]) for r in rows]
 
-    def search_skills(self, user_id, embedding, k) -> list[Skill]:
-        rows = self._rows(
-            """SELECT id,name,summary,body,origin FROM skills WHERE user_id=%s
-               ORDER BY embedding <=> %s LIMIT %s""",
-            (user_id, self._vec(embedding), k))
+    def search_skills(self, user_id, query, k) -> list[Skill]:
+        terms = _terms(query)
+        if not terms:
+            rows = self._rows(
+                "SELECT id,name,summary,body,origin FROM skills WHERE user_id=%s LIMIT %s",
+                (user_id, k))
+        else:
+            tsquery = " | ".join(terms)  # OR of terms for recall
+            rows = self._rows(
+                """SELECT id,name,summary,body,origin,
+                          ts_rank(to_tsvector('english', name||' '||summary||' '||body),
+                                  to_tsquery('english', %s)) AS rank
+                   FROM skills
+                   WHERE user_id=%s
+                     AND to_tsvector('english', name||' '||summary||' '||body)
+                         @@ to_tsquery('english', %s)
+                   ORDER BY rank DESC LIMIT %s""",
+                (tsquery, user_id, tsquery, k))
         return [Skill(id=str(r[0]), user_id=user_id, name=r[1], summary=r[2],
                       body=r[3], origin=r[4]) for r in rows]
+
+    def get_skill(self, user_id, name) -> Optional[Skill]:
+        r = self._row(
+            """SELECT id,name,summary,body,origin FROM skills
+               WHERE user_id=%s AND name=%s LIMIT 1""", (user_id, name))
+        if not r:
+            return None
+        return Skill(id=str(r[0]), user_id=user_id, name=r[1], summary=r[2],
+                     body=r[3], origin=r[4])
 
     # -- tool index (Postgres full-text search, no embeddings) --
     def upsert_tool(self, mcp_server, name, description, input_schema) -> None:

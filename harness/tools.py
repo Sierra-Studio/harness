@@ -7,26 +7,24 @@ from __future__ import annotations
 import json
 from typing import Any, Optional
 
-from .embeddings import Embedder
 from .models import Session
 from .repository import Repository
 from .sandbox import SandboxBackend
 
 
 class ToolRegistry:
-    BUILTINS = ("SearchTools", "GetTools", "CallTool", "GetSkills", "Bash")
+    BUILTINS = ("SearchTools", "GetTools", "CallTool", "SearchSkills", "GetSkill", "Bash")
 
-    def __init__(self, repo: Repository, embedder: Embedder, sandbox: SandboxBackend,
+    def __init__(self, repo: Repository, sandbox: SandboxBackend,
                  mcp_clients: Optional[dict] = None, *, bash_timeout: int = 60,
                  bash_max_output: int = 10_000):
         self.repo = repo
-        self.embedder = embedder
         self.sandbox = sandbox
         self.mcp_clients = mcp_clients or {}   # name -> McpClient
         self.bash_timeout = bash_timeout
         self.bash_max_output = bash_max_output
 
-    # ---- specs sent to the model (only the 4 built-ins) ----
+    # ---- specs sent to the model (only the 6 built-ins) ----
     def builtin_specs(self) -> list[dict]:
         def fn(name, desc, props, required):
             return {"type": "function", "function": {
@@ -52,9 +50,14 @@ class ToolRegistry:
                               "description": "Arguments object per the tool's "
                               "input schema. Use {} if none are needed."}},
                ["name"]),
-            fn("GetSkills", "List or recall the current user's saved skills "
-               "(reusable procedures). Optionally filter by a query.",
+            fn("SearchSkills", "List or keyword-search the current user's saved "
+               "skills (reusable procedures). Returns name + one-line summary "
+               "for each. Omit the query to list all. Then call GetSkill to read "
+               "the full procedure.",
                {"query": {"type": "string"}}, []),
+            fn("GetSkill", "Fetch the full body (steps) of one saved skill by "
+               "exact name (from SearchSkills results) before following it.",
+               {"name": {"type": "string"}}, ["name"]),
             fn("Bash",
                "Run a shell command in your per-session sandbox. This is your "
                "UNIVERSAL FALLBACK: use it whenever no specialized tool fits the "
@@ -80,10 +83,12 @@ class ToolRegistry:
                 content = self._search_tools(args)
             elif name == "GetTools":
                 content = self._get_tool(args)
+            elif name == "SearchSkills":
+                content = self._search_skills(session, args)
             elif name == "CallTool":
                 content = self._call_tool(args)
-            elif name == "GetSkills":
-                content = self._get_skills(session, args)
+            elif name == "GetSkill":
+                content = self._get_skill(session, args)
             elif name == "Bash":
                 content = self._bash(session, args)
             else:
@@ -124,18 +129,24 @@ class ToolRegistry:
                            "input_schema": spec.input_schema,
                            "server": spec.mcp_server}, ensure_ascii=False)
 
-    def _get_skills(self, session: Session, args: dict) -> str:
+    def _search_skills(self, session: Session, args: dict) -> str:
         query = args.get("query")
         if query:
-            skills = self.repo.search_skills(session.user_id,
-                                             self.embedder.embed(query), 5)
+            skills = self.repo.search_skills(session.user_id, query, 5)
         else:
             skills = self.repo.list_skills(session.user_id)
         if not skills:
             return "No skills for this user yet."
-        # progressive disclosure: name + one-line summary (body loaded only if asked)
+        # progressive disclosure: name + one-line summary; body via GetSkill.
         return json.dumps([{"name": s.name, "summary": s.summary} for s in skills],
                           ensure_ascii=False)
+
+    def _get_skill(self, session: Session, args: dict) -> str:
+        skill = self.repo.get_skill(session.user_id, args.get("name", ""))
+        if not skill:
+            return "Skill not found. Use SearchSkills to list available skills."
+        return json.dumps({"name": skill.name, "summary": skill.summary,
+                           "body": skill.body}, ensure_ascii=False)
 
     def _bash(self, session: Session, args: dict) -> str:
         command = args.get("command", "")
