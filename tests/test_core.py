@@ -99,6 +99,29 @@ def test_harness_uses_soul():
     assert "Atlas" in h.loop.system_prompt
 
 
+def test_today_line_format():
+    from datetime import date
+    from harness.prompt import today_line, with_today
+    assert today_line(date(2026, 6, 25)) == "Today's date is 2026-06-25."
+    sp = with_today("BASE PROMPT", date(2026, 1, 2))
+    assert sp.endswith("Today's date is 2026-01-02.")
+    assert sp.startswith("BASE PROMPT")
+
+
+def test_loop_appends_today_date_to_system_prompt():
+    import datetime
+    p = FakeProvider(context_window=4000)
+    p.queue(content="ok")
+    h = _harness(p)
+    s = h.start_session("u1")
+    h.run_turn(s, "hi")
+    # the system message sent to the provider must carry today's date at the end
+    sent = p.calls[-1]
+    system_msg = sent[0]["content"]
+    assert system_msg.rstrip().endswith(
+        f"Today's date is {datetime.date.today().isoformat()}.")
+
+
 def test_bash_cwd_persists_across_calls():
     import json
     p = FakeProvider(context_window=4000)

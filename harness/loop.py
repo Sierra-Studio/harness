@@ -10,6 +10,7 @@ from .config import Config
 from .memory import Memory
 from .models import Session
 from .observer import Observer
+from .prompt import with_today
 from .provider import Provider
 from .repository import Repository
 from .tools import ToolRegistry
@@ -47,6 +48,11 @@ class AgentLoop:
         self.memory.append(session, "user", user_message)
         self.memory.maybe_checkpoint(session)
 
+        # Volatile date layer: always today's date, appended fresh per turn so it
+        # stays current without being frozen at construction. Same string all day
+        # keeps the upstream prompt cache warm.
+        prompt = with_today(self.system_prompt)
+
         final_text = ""
         for step in range(self.cfg.max_steps):
             session = self.repo.get_session(session.id)
@@ -57,7 +63,7 @@ class AgentLoop:
                 return TurnResult(final_text or "(token budget exhausted)",
                                   "budget_exhausted", step, session.tokens_spent)
 
-            messages = self.memory.build_window(session, self.system_prompt)
+            messages = self.memory.build_window(session, prompt)
             with self.observer.timed(session.id, None, "model_call",
                                      {"step": step}) as slot:
                 res = self.provider.complete(session.model, messages,
@@ -71,7 +77,7 @@ class AgentLoop:
             self.repo.add_session_tokens(session.id, res.tokens_in + res.tokens_out)
             session = self.repo.get_session(session.id)
 
-            self.memory.maybe_summarize(session, self.system_prompt)
+            self.memory.maybe_summarize(session, prompt)
 
             if not res.tool_calls:
                 return TurnResult(res.text, "ok", step + 1, session.tokens_spent)

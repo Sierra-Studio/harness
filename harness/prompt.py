@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import os
 import re
+from datetime import date as _date
 from pathlib import Path
 from typing import Optional
 
@@ -103,10 +104,26 @@ def load_soul(soul_path: str = "", *, explicit: str = "") -> str:
 def build_system_prompt(soul_path: str = "", *, soul: str = "",
                         tool_guidance: bool = True,
                         extra: str = "") -> str:
-    """Assemble the layered system prompt. `extra` is an optional appended block."""
+    """Assemble the layered system prompt. `extra` is an optional appended block.
+
+    NOTE: this does NOT include the date line — that is volatile and is appended
+    fresh on every turn by the loop via `with_today()`, so it always reflects the
+    current day without freezing it at construction time.
+    """
     layers = [load_soul(soul_path, explicit=soul)]
     if tool_guidance:
         layers.append(TOOL_GUIDANCE)
     if _meaningful(extra):
         layers.append(extra.strip())
     return "\n\n".join(layers)
+
+
+def today_line(today: Optional[_date] = None) -> str:
+    """The volatile date layer, at day granularity (ISO 8601)."""
+    d = today or _date.today()
+    return f"Today's date is {d.isoformat()}."
+
+
+def with_today(system_prompt: str, today: Optional[_date] = None) -> str:
+    """Append the current date as the final layer of the system prompt."""
+    return f"{system_prompt}\n\n{today_line(today)}"
