@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import abc
 import re
+import unicodedata
 import uuid
 from typing import Any, Optional
 
@@ -21,9 +22,19 @@ def _uuid() -> str:
     return str(uuid.uuid4())
 
 
+def _fold(text: str) -> str:
+    """Lowercase and strip diacritics so accents never break matching.
+
+    "Reunião" -> "reuniao", "résumé" -> "resume". Language-agnostic: it makes
+    keyword search insensitive to accents in any Latin-script language.
+    """
+    nfkd = unicodedata.normalize("NFKD", text or "")
+    return "".join(c for c in nfkd if not unicodedata.combining(c)).lower()
+
+
 def _terms(text: str) -> list[str]:
-    """Lowercased alphanumeric word tokens for keyword search."""
-    return re.findall(r"[a-z0-9]+", text.lower())
+    """Accent-folded alphanumeric word tokens for keyword search."""
+    return re.findall(r"[a-z0-9]+", _fold(text))
 
 
 class Repository(abc.ABC):
@@ -220,7 +231,7 @@ class InMemoryRepository(Repository):
         for t in self.tools:
             if not t.enabled:
                 continue
-            hay = f"{t.name} {t.description}".lower()
+            hay = _fold(f"{t.name} {t.description}")
             score = sum(1 for term in terms if term in hay)
             if score or not terms:
                 scored.append((score, t))
@@ -415,33 +426,53 @@ class PostgresRepository(Repository):
                      input_schema=EXCLUDED.input_schema""",
             (mcp_server, name, description, json.dumps(input_schema)))
 
+    # Accent-folded, language-agnostic document expression (matches the GIN
+    # index in schema.sql). 'simple' avoids English-only stemming; f_unaccent
+    # makes both sides accent-insensitive.
+    _DOC = ("to_tsvector('simple', "
+            "f_unaccent(name||' '||coalesce(description,'')))")
+    _COLS = "id,mcp_server,name,description,input_schema"
+
     def search_tools(self, query, k) -> list[ToolSpec]:
-        terms = _terms(query)
+        terms = _terms(query)  # already accent-folded + lowercased
         if not terms:
             rows = self._rows(
-                """SELECT id,mcp_server,name,description,input_schema
-                   FROM tool_index WHERE enabled LIMIT %s""", (k,))
-        else:
-            tsquery = " | ".join(terms)  # OR of terms for recall
-            rows = self._rows(
-                """SELECT id,mcp_server,name,description,input_schema,
-                          ts_rank(to_tsvector('english', name||' '||coalesce(description,'')),
-                                  to_tsquery('english', %s)) AS rank
-                   FROM tool_index
-                   WHERE enabled
-                     AND to_tsvector('english', name||' '||coalesce(description,''))
-                         @@ to_tsquery('english', %s)
-                   ORDER BY rank DESC LIMIT %s""",
-                (tsquery, tsquery, k))
-        return [ToolSpec(id=str(r[0]), mcp_server=r[1], name=r[2], description=r[3],
-                         input_schema=r[4]) for r in rows]
+                f"SELECT {self._COLS} FROM tool_index WHERE enabled LIMIT %s", (k,))
+            return [self._toolspec(r) for r in rows]
+
+        # 1) Full-text with prefix matching (`:*`) so partial/variant terms hit.
+        tsquery = " | ".join(f"{t}:*" for t in terms)  # OR of prefixes for recall
+        rows = self._rows(
+            f"""SELECT {self._COLS},
+                       ts_rank({self._DOC}, to_tsquery('simple', %s)) AS rank
+                FROM tool_index
+                WHERE enabled AND {self._DOC} @@ to_tsquery('simple', %s)
+                ORDER BY rank DESC LIMIT %s""",
+            (tsquery, tsquery, k))
+        if rows:
+            return [self._toolspec(r) for r in rows]
+
+        # 2) Substring fallback (accent-insensitive) for anything FTS missed,
+        #    e.g. a term that is a fragment of a tool name with no word boundary.
+        clauses = " OR ".join(
+            ["f_unaccent(name) ILIKE %s OR f_unaccent(description) ILIKE %s"]
+            * len(terms))
+        params: list[Any] = []
+        for t in terms:
+            params += [f"%{t}%", f"%{t}%"]
+        params.append(k)
+        rows = self._rows(
+            f"SELECT {self._COLS} FROM tool_index WHERE enabled AND ({clauses}) "
+            "LIMIT %s", tuple(params))
+        return [self._toolspec(r) for r in rows]
 
     def get_tool(self, name) -> Optional[ToolSpec]:
         r = self._row(
-            """SELECT id,mcp_server,name,description,input_schema FROM tool_index
-               WHERE name=%s LIMIT 1""", (name,))
-        if not r:
-            return None
+            f"SELECT {self._COLS} FROM tool_index WHERE name=%s LIMIT 1", (name,))
+        return self._toolspec(r) if r else None
+
+    @staticmethod
+    def _toolspec(r) -> ToolSpec:
         return ToolSpec(id=str(r[0]), mcp_server=r[1], name=r[2], description=r[3],
                         input_schema=r[4])
 

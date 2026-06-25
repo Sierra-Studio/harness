@@ -14,7 +14,7 @@ from .sandbox import SandboxBackend
 
 
 class ToolRegistry:
-    BUILTINS = ("SearchTools", "GetTools", "GetSkills", "Bash")
+    BUILTINS = ("SearchTools", "GetTools", "CallTool", "GetSkills", "Bash")
 
     def __init__(self, repo: Repository, embedder: Embedder, sandbox: SandboxBackend,
                  mcp_clients: Optional[dict] = None, *, bash_timeout: int = 60,
@@ -41,6 +41,17 @@ class ToolRegistry:
             fn("GetTools", "Fetch the full input schema of one tool by exact name "
                "(from SearchTools results) before calling it.",
                {"name": {"type": "string"}}, ["name"]),
+            fn("CallTool", "Invoke an external tool you found via SearchTools/"
+               "GetTools. This is the ONLY way to actually run an external tool — "
+               "you cannot call it directly by name. Pass its exact 'name' and an "
+               "'arguments' object matching its input schema; omit optional "
+               "parameters you don't have.",
+               {"name": {"type": "string",
+                         "description": "Exact tool name from SearchTools/GetTools."},
+                "arguments": {"type": "object",
+                              "description": "Arguments object per the tool's "
+                              "input schema. Use {} if none are needed."}},
+               ["name"]),
             fn("GetSkills", "List or recall the current user's saved skills "
                "(reusable procedures). Optionally filter by a query.",
                {"query": {"type": "string"}}, []),
@@ -69,6 +80,8 @@ class ToolRegistry:
                 content = self._search_tools(args)
             elif name == "GetTools":
                 content = self._get_tool(args)
+            elif name == "CallTool":
+                content = self._call_tool(args)
             elif name == "GetSkills":
                 content = self._get_skills(session, args)
             elif name == "Bash":
@@ -140,6 +153,24 @@ class ToolRegistry:
         if res.stderr:
             parts.append(f"<stderr>\n{res.stderr}\n</stderr>")
         return "\n".join(parts)
+
+    def _call_tool(self, args: dict) -> str:
+        """Execute an external (MCP index) tool. The model passes the tool's
+        exact name plus an arguments object; we route to the owning MCP client.
+        This is what makes discovered tools actually runnable.
+        """
+        name = args.get("name", "")
+        if not name:
+            return "ERROR: CallTool needs 'name' (from SearchTools/GetTools)."
+        inner = args.get("arguments", {})
+        if isinstance(inner, str):  # some models stringify the object
+            try:
+                inner = json.loads(inner or "{}")
+            except json.JSONDecodeError:
+                return "ERROR: 'arguments' must be a JSON object."
+        if not isinstance(inner, dict):
+            inner = {}
+        return self._index_tool(name, inner)
 
     def _index_tool(self, name: str, args: dict) -> str:
         spec = self.repo.get_tool(name)

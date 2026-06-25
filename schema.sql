@@ -2,6 +2,13 @@
 -- {{EMBEDDING_DIM}} is substituted by `python -m harness.cli init-db` from EMBEDDING_DIM.
 CREATE EXTENSION IF NOT EXISTS vector;
 CREATE EXTENSION IF NOT EXISTS pgcrypto;  -- gen_random_uuid()
+CREATE EXTENSION IF NOT EXISTS unaccent;  -- accent-insensitive tool search
+
+-- IMMUTABLE wrapper around unaccent() (the bare function is only STABLE) so it
+-- can back an expression index. Two-arg form pins the dictionary explicitly.
+CREATE OR REPLACE FUNCTION f_unaccent(text) RETURNS text
+  LANGUAGE sql IMMUTABLE PARALLEL SAFE STRICT AS
+$$ SELECT public.unaccent('public.unaccent', $1) $$;
 
 CREATE TABLE IF NOT EXISTS users (
   id          uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -85,9 +92,13 @@ CREATE TABLE IF NOT EXISTS tool_index (
   enabled      boolean NOT NULL DEFAULT true,
   UNIQUE (mcp_server, name)
 );
--- GIN index backing the full-text SearchTools query.
+-- GIN index backing SearchTools: language-agnostic ('simple', no English-only
+-- stemming) over accent-folded text, so queries match regardless of accents or
+-- input language. Dropped first so re-applying the schema picks up the new
+-- definition even if an older index of the same name exists.
+DROP INDEX IF EXISTS idx_tool_index_fts;
 CREATE INDEX IF NOT EXISTS idx_tool_index_fts ON tool_index
-  USING gin (to_tsvector('english', name || ' ' || coalesce(description, '')));
+  USING gin (to_tsvector('simple', f_unaccent(name || ' ' || coalesce(description, ''))));
 
 -- Observability: one row per loop step.
 CREATE TABLE IF NOT EXISTS step_logs (
