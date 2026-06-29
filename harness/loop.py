@@ -4,7 +4,8 @@ partial response when the ceiling is reached.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import Any, Iterator, Optional
 
 from .config import Config
 from .memory import Memory
@@ -22,6 +23,25 @@ class TurnResult:
     status: str       # ok | budget_exhausted | max_steps
     steps: int
     tokens_spent: int
+
+
+@dataclass
+class LoopEvent:
+    """A single observable event emitted while a turn runs.
+
+    kind:
+      "text"        incremental assistant content  -> text
+      "tool_start"  a tool is about to run         -> name, args, call_id
+      "tool_result" a tool finished                -> name, content, call_id
+      "final"       the turn ended                 -> result (TurnResult)
+    """
+    kind: str
+    text: str = ""
+    name: str = ""
+    call_id: str = ""
+    args: dict = field(default_factory=dict)
+    content: str = ""
+    result: Optional[TurnResult] = None
 
 
 class AgentLoop:
@@ -43,7 +63,22 @@ class AgentLoop:
         return self.repo.create_session(
             user.id, model, ctx, self.cfg.token_budget_per_session)
 
-    def run_turn(self, session: Session, user_message: str) -> TurnResult:
+    def run_turn(self, session: Session, user_message: Any) -> TurnResult:
+        """Run a turn to completion and return its TurnResult.
+
+        Thin consumer of run_turn_stream so the synchronous API is preserved for
+        callers (and tests) that don't care about intermediate events.
+        """
+        result: Optional[TurnResult] = None
+        for ev in self.run_turn_stream(session, user_message):
+            if ev.kind == "final":
+                result = ev.result
+        # run_turn_stream always emits a final event before returning.
+        assert result is not None
+        return result
+
+    def run_turn_stream(self, session: Session,
+                        user_message: Any) -> Iterator[LoopEvent]:
         session = self.repo.get_session(session.id)
         self.memory.append(session, "user", user_message)
         self.memory.maybe_checkpoint(session)
@@ -66,14 +101,27 @@ class AgentLoop:
             # --- token-budget guard: stop & return partial (budget 0 = unlimited) ---
             if session.token_budget and session.tokens_spent >= session.token_budget:
                 self.repo.set_session_status(session.id, "budget_exhausted")
-                return TurnResult(final_text or "(token budget exhausted)",
-                                  "budget_exhausted", step, session.tokens_spent)
+                yield LoopEvent("final", result=TurnResult(
+                    final_text or "(token budget exhausted)",
+                    "budget_exhausted", step, session.tokens_spent))
+                return
 
             messages = self.memory.build_window(session, prompt)
+            # Stream the model turn: drive provider.stream(), surfacing each text
+            # delta as a "text" event; the assembled ModelResult is the generator's
+            # return value (StopIteration.value).
             with self.observer.timed(session.id, None, "model_call",
                                      {"step": step}) as slot:
-                res = self.provider.complete(session.model, messages,
-                                             self.tools.builtin_specs())
+                gen = self.provider.stream(session.model, messages,
+                                           self.tools.builtin_specs())
+                while True:
+                    try:
+                        delta = next(gen)
+                    except StopIteration as stop:
+                        res = stop.value
+                        break
+                    if delta:
+                        yield LoopEvent("text", text=delta)
                 slot["tokens_in"] = res.tokens_in
                 slot["tokens_out"] = res.tokens_out
 
@@ -86,16 +134,22 @@ class AgentLoop:
             self.memory.maybe_summarize(session, prompt)
 
             if not res.tool_calls:
-                return TurnResult(res.text, "ok", step + 1, session.tokens_spent)
+                yield LoopEvent("final", result=TurnResult(
+                    res.text, "ok", step + 1, session.tokens_spent))
+                return
 
             final_text = res.text or final_text
             for call in res.tool_calls:
+                name, args, call_id = self.tools._parse(call)
+                yield LoopEvent("tool_start", name=name, args=args, call_id=call_id)
                 out = self.tools.dispatch(session, call)
                 self.memory.append(session, "tool", {
                     "tool_call_id": out["tool_call_id"], "content": out["content"]})
                 self.observer.log(session.id, assistant_turn.id, "tool_call",
                                   {"name": out["name"]})
+                yield LoopEvent("tool_result", name=out["name"],
+                                call_id=out["tool_call_id"], content=out["content"])
 
-        return TurnResult(final_text or "(max steps reached)", "max_steps",
-                          self.cfg.max_steps,
-                          self.repo.get_session(session.id).tokens_spent)
+        yield LoopEvent("final", result=TurnResult(
+            final_text or "(max steps reached)", "max_steps", self.cfg.max_steps,
+            self.repo.get_session(session.id).tokens_spent))

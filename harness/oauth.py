@@ -12,6 +12,7 @@ catches the redirect on a localhost callback. Tokens are cached under
 from __future__ import annotations
 
 import base64
+import errno
 import hashlib
 import http.server
 import json
@@ -194,9 +195,30 @@ class OAuthClient:
         tok.setdefault("refresh_token", cache["tokens"].get("refresh_token"))
         return tok
 
+    def _bind_callback_server(self) -> http.server.HTTPServer:
+        """Bind the loopback callback server, tolerating a socket left in
+        TIME_WAIT by a just-finished flow. The redirect URI is registered with a
+        fixed port, so we cannot fall back to an ephemeral one — instead retry
+        briefly, then fail with an actionable message."""
+        addr = (self.cfg.redirect_host, self.cfg.redirect_port)
+        last: Optional[OSError] = None
+        for attempt in range(5):
+            try:
+                # allow_reuse_address (SO_REUSEADDR) is set by HTTPServer; this
+                # lets us rebind a port whose previous socket is in TIME_WAIT.
+                return http.server.HTTPServer(addr, _CallbackHandler)
+            except OSError as e:
+                last = e
+                if e.errno != errno.EADDRINUSE:
+                    raise
+                time.sleep(0.5 * (attempt + 1))
+        raise RuntimeError(
+            f"OAuth callback port {self.cfg.redirect_host}:{self.cfg.redirect_port} "
+            f"is already in use. Another authorization may be in progress, or a "
+            f"stale process is holding it — close it and try again.") from last
+
     def _await_redirect(self, auth_url: str, state: str) -> str:
-        server = http.server.HTTPServer(
-            (self.cfg.redirect_host, self.cfg.redirect_port), _CallbackHandler)
+        server = self._bind_callback_server()
         server.oauth_result = None  # type: ignore[attr-defined]
         server.timeout = 1
         if self.cfg.open_browser:

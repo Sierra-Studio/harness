@@ -65,6 +65,13 @@ class Memory:
                 return {"role": "tool", "tool_call_id": c.get("tool_call_id"),
                         "content": c.get("content", "")}
             return {"role": "tool", "content": str(c)}
+        if turn.role == "user" and isinstance(turn.content, dict) \
+                and turn.content.get("kind") == "user_message":
+            # Attachment-bearing user turn (app envelope): the model sees the
+            # `content` field verbatim — a plain string, or a multimodal block
+            # list (text + image_url) for vision. The sibling display metadata
+            # (text/attachments) is for the UI only and is dropped here.
+            return {"role": "user", "content": turn.content["content"]}
         content = turn.content if isinstance(turn.content, str) \
             else json.dumps(turn.content, ensure_ascii=False)
         return {"role": turn.role, "content": content}

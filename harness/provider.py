@@ -8,7 +8,7 @@ from __future__ import annotations
 import abc
 import json
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import Any, Iterator, Optional
 
 from .config import Config
 
@@ -35,6 +35,28 @@ class Provider(abc.ABC):
     @abc.abstractmethod
     def complete(self, model: str, messages: list[dict],
                  tools: Optional[list[dict]] = None) -> ModelResult: ...
+
+    def stream(self, model: str, messages: list[dict],
+               tools: Optional[list[dict]] = None) -> Iterator[str]:
+        """Yield assistant text deltas; return the final ModelResult.
+
+        Consume with a next()-loop and read the return value off StopIteration:
+
+            gen = provider.stream(...)
+            while True:
+                try: delta = next(gen)
+                except StopIteration as stop:
+                    res = stop.value
+                    break
+
+        Default is a non-streaming fallback (one delta = the whole text), so any
+        provider works without implementing real streaming. complete() is left
+        untouched and continues to back summarize/classify/induce.
+        """
+        res = self.complete(model, messages, tools)
+        if res.text:
+            yield res.text
+        return res
 
     # ---- helpers built on top of complete() ----
     def summarize(self, model: str, prev_summary: Optional[str],
@@ -74,6 +96,14 @@ def _text(content: Any) -> str:
     if isinstance(content, str):
         return content
     return json.dumps(content, ensure_ascii=False)
+
+
+def _chunk(text: str, n: int) -> list[str]:
+    """Split `text` into at most `n` roughly equal, order-preserving pieces."""
+    if not text:
+        return []
+    size = max(1, -(-len(text) // n))  # ceil
+    return [text[i:i + size] for i in range(0, len(text), size)]
 
 
 def _parse_json_array(text: str) -> list[dict]:
@@ -133,6 +163,69 @@ class OpenRouterProvider(Provider):
                            tokens_in=usage.get("prompt_tokens", 0),
                            tokens_out=usage.get("completion_tokens", 0))
 
+    def stream(self, model, messages, tools=None) -> Iterator[str]:
+        payload: dict = {"model": model, "messages": messages, "stream": True,
+                         "stream_options": {"include_usage": True}}
+        if tools:
+            payload["tools"] = tools
+            payload["tool_choice"] = "auto"
+        content_parts: list[str] = []
+        tool_calls: dict[int, dict] = {}   # index -> assembled tool_call
+        tokens_in = tokens_out = 0
+        with self._client() as c:
+            with c.stream("POST", "/chat/completions", json=payload) as r:
+                r.raise_for_status()
+                for raw in r.iter_lines():
+                    line = raw.strip()
+                    if not line.startswith("data:"):
+                        continue
+                    data = line[len("data:"):].strip()
+                    if data == "[DONE]":
+                        break
+                    try:
+                        chunk = json.loads(data)
+                    except json.JSONDecodeError:
+                        continue
+                    usage = chunk.get("usage")
+                    if usage:
+                        tokens_in = usage.get("prompt_tokens", tokens_in)
+                        tokens_out = usage.get("completion_tokens", tokens_out)
+                    choices = chunk.get("choices") or []
+                    if not choices:
+                        continue
+                    delta = choices[0].get("delta") or {}
+                    piece = delta.get("content")
+                    if piece:
+                        content_parts.append(piece)
+                        yield piece
+                    for tc in delta.get("tool_calls") or []:
+                        self._merge_tool_call(tool_calls, tc)
+        msg: dict = {"role": "assistant", "content": "".join(content_parts)}
+        if tool_calls:
+            msg["tool_calls"] = [tool_calls[i] for i in sorted(tool_calls)]
+        return ModelResult(message=msg, tokens_in=tokens_in, tokens_out=tokens_out)
+
+    @staticmethod
+    def _merge_tool_call(acc: dict[int, dict], frag: dict) -> None:
+        """Fold a streamed tool_call fragment into the accumulator by index.
+
+        OpenAI/OpenRouter stream tool calls across chunks: the first carries id +
+        function.name, later chunks append function.arguments string fragments.
+        """
+        idx = frag.get("index", 0)
+        cur = acc.setdefault(
+            idx, {"id": "", "type": "function",
+                  "function": {"name": "", "arguments": ""}})
+        if frag.get("id"):
+            cur["id"] = frag["id"]
+        if frag.get("type"):
+            cur["type"] = frag["type"]
+        fn = frag.get("function") or {}
+        if fn.get("name"):
+            cur["function"]["name"] += fn["name"]
+        if fn.get("arguments"):
+            cur["function"]["arguments"] += fn["arguments"]
+
 
 # ---------------------------------------------------------------------------
 class FakeProvider(Provider):
@@ -164,6 +257,24 @@ class FakeProvider(Provider):
             msg = {"role": "assistant", "content": f"OK: {last[:80]}"}
         ti = sum(len(_text(m.get("content"))) for m in messages) // 4
         to = len(_text(msg.get("content"))) // 4
+        return ModelResult(message=msg, tokens_in=max(1, ti), tokens_out=max(1, to))
+
+    def stream(self, model, messages, tools=None) -> Iterator[str]:
+        """Same script/echo behaviour as complete(), but the content is emitted
+        in a few chunks so the offline demo and tests visibly stream. Token
+        accounting is identical to complete(), so run_turn's TurnResult is
+        unchanged under streaming."""
+        self.calls.append(messages)
+        if self.script:
+            msg = self.script.pop(0)
+        else:
+            last = _text(messages[-1].get("content")) if messages else ""
+            msg = {"role": "assistant", "content": f"OK: {last[:80]}"}
+        ti = sum(len(_text(m.get("content"))) for m in messages) // 4
+        to = len(_text(msg.get("content"))) // 4
+        text = msg.get("content") or ""
+        for piece in _chunk(text, 3):
+            yield piece
         return ModelResult(message=msg, tokens_in=max(1, ti), tokens_out=max(1, to))
 
     # cheap deterministic helpers (avoid consuming the scripted queue)

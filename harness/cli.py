@@ -2,6 +2,9 @@
 
     uv run harness init-db     # create schema in DATABASE_URL
     uv run harness chat        # interactive session (uses OpenRouter if configured)
+    uv run harness serve [host] [port]
+                               # HTTP server streaming turns as Server-Sent Events
+                               # (host/port also via HARNESS_HTTP_HOST/HARNESS_HTTP_PORT)
     uv run harness add-skill <user_id> <name> <summary> [body]
                                # author a skill (body read from stdin if omitted)
     uv run harness list-skills <user_id>
@@ -65,9 +68,26 @@ def list_skills(argv: list[str]) -> int:
     return 0
 
 
+def _elide(text: str, cap: int = 200) -> str:
+    """One-line, length-capped preview of a tool result for live display."""
+    flat = " ".join((text or "").split())
+    if len(flat) <= cap:
+        return flat
+    head = cap * 2 // 3
+    return f"{flat[:head]} … {flat[-(cap - head):]}"
+
+
+def _short_args(args: dict, cap: int = 80) -> str:
+    import json
+    s = json.dumps(args, ensure_ascii=False) if args else ""
+    return s if len(s) <= cap else s[:cap] + "…"
+
+
 def chat() -> int:
     cfg = load_config()
-    h = Harness(cfg, echo=True)
+    # echo=False: the live stream rendering below replaces the Observer's terse
+    # tool_call echo, so we don't want both.
+    h = Harness(cfg, echo=False)
     backend = "Postgres" if cfg.database_url else "in-memory"
     provider = "OpenRouter" if cfg.openrouter_api_key else "FakeProvider (offline)"
     print(f"Harness ready · repo={backend} · provider={provider} · model={cfg.model}")
@@ -92,10 +112,22 @@ def chat() -> int:
             msg = input("\nyou> ").strip()
             if msg in {"exit", "quit"}:
                 break
-            res = h.run_turn(session, msg)
-            print(f"\nassistant> {res.text}")
-            print(f"  [status={res.status} steps={res.steps} "
-                  f"tokens_spent={res.tokens_spent}]")
+            in_text = False   # whether we're mid assistant-text span (for prefixing)
+            for ev in h.run_turn_stream(session, msg):
+                if ev.kind == "text":
+                    if not in_text:
+                        print("\nassistant> ", end="", flush=True)
+                        in_text = True
+                    print(ev.text, end="", flush=True)
+                elif ev.kind == "tool_start":
+                    print(f"\n  ⚙ {ev.name}({_short_args(ev.args)})", flush=True)
+                    in_text = False
+                elif ev.kind == "tool_result":
+                    print(f"  ↳ {_elide(ev.content)}", flush=True)
+                elif ev.kind == "final":
+                    res = ev.result
+                    print(f"\n  [status={res.status} steps={res.steps} "
+                          f"tokens_spent={res.tokens_spent}]")
     except (EOFError, KeyboardInterrupt):
         pass
     created = h.close_session(session)
@@ -110,12 +142,23 @@ def chat() -> int:
     return 0
 
 
+def serve(argv: list[str]) -> int:
+    import os
+
+    from .server import serve as run_server
+    host = argv[2] if len(argv) > 2 else os.environ.get("HARNESS_HTTP_HOST", "127.0.0.1")
+    port = int(argv[3] if len(argv) > 3 else os.environ.get("HARNESS_HTTP_PORT", "8800"))
+    return run_server(host, port)
+
+
 def main(argv: list[str]) -> int:
     cmd = argv[1] if len(argv) > 1 else "chat"
     if cmd == "init-db":
         return init_db()
     if cmd == "chat":
         return chat()
+    if cmd == "serve":
+        return serve(argv)
     if cmd == "add-skill":
         return add_skill(argv)
     if cmd == "list-skills":

@@ -458,6 +458,120 @@ def test_http_mcp_call_via_stub_transport():
     assert "standup" in out["content"]
 
 
+# --------------------------------------------------------------------------
+# Streaming: provider.stream, loop.run_turn_stream, OpenRouter SSE accumulation
+# --------------------------------------------------------------------------
+
+def _drain(gen):
+    """Consume a stream() generator: return (deltas, final ModelResult)."""
+    deltas = []
+    while True:
+        try:
+            deltas.append(next(gen))
+        except StopIteration as stop:
+            return deltas, stop.value
+
+
+def test_fake_stream_matches_complete():
+    """FakeProvider.stream deltas concatenate to the full content and its
+    ModelResult tokens match complete() (so run_turn's TurnResult is unchanged)."""
+    p = FakeProvider(context_window=4000)
+    p.queue(content="hello streamed world")
+    deltas, res = _drain(p.stream("m", [{"role": "user", "content": "hi"}]))
+    assert "".join(deltas) == "hello streamed world"
+    assert len(deltas) >= 2                       # actually chunked, not one blob
+    # token math identical to complete() on the same script/input
+    p2 = FakeProvider(context_window=4000)
+    p2.queue(content="hello streamed world")
+    comp = p2.complete("m", [{"role": "user", "content": "hi"}])
+    assert (res.tokens_in, res.tokens_out) == (comp.tokens_in, comp.tokens_out)
+
+
+def test_run_turn_stream_event_order_and_final():
+    p = FakeProvider(context_window=4000)
+    p.queue(content="thinking", tool_calls=[{"id": "c1", "function": {
+        "name": "Bash", "arguments": '{"command": "echo xyz"}'}}])
+    p.queue(content="all done")
+    h = _harness(p)
+    s = h.start_session("u1")
+    events = list(h.run_turn_stream(s, "go"))
+    kinds = [e.kind for e in events]
+    # text* then tool_start, tool_result, then text* then final
+    assert kinds[0] == "text"
+    assert "tool_start" in kinds and "tool_result" in kinds
+    assert kinds.index("tool_start") < kinds.index("tool_result")
+    assert kinds[-1] == "final"
+    start = next(e for e in events if e.kind == "tool_start")
+    assert start.name == "Bash" and start.args == {"command": "echo xyz"}
+    assert start.call_id == "c1"
+    result = next(e for e in events if e.kind == "tool_result")
+    assert "xyz" in result.content
+    final = events[-1].result
+    assert final.status == "ok" and final.steps == 2
+
+
+def test_run_turn_equals_streamed_final():
+    """run_turn (the drainer) returns exactly the stream's final TurnResult."""
+    def make():
+        p = FakeProvider(context_window=4000)
+        p.queue(content="x", tool_calls=[{"id": "c1", "function": {
+            "name": "Bash", "arguments": '{"command": "echo hi"}'}}])
+        p.queue(content="final answer")
+        return _harness(p)
+    h1 = make(); r1 = h1.run_turn(h1.start_session("u1"), "go")
+    h2 = make()
+    streamed = [e for e in h2.run_turn_stream(h2.start_session("u1"), "go")
+                if e.kind == "final"][0].result
+    assert dataclasses.astuple(r1) == dataclasses.astuple(streamed)
+
+
+def test_openrouter_stream_sse_accumulation():
+    """OpenRouter SSE: split content + fragmented tool_call arguments assemble
+    into one ModelResult; usage from the final chunk is captured."""
+    import json as _json
+
+    from harness.provider import OpenRouterProvider
+
+    chunks = [
+        {"choices": [{"delta": {"content": "Hel"}}]},
+        {"choices": [{"delta": {"content": "lo"}}]},
+        {"choices": [{"delta": {"tool_calls": [
+            {"index": 0, "id": "call_1", "type": "function",
+             "function": {"name": "Bash", "arguments": '{"comm'}}]}}]},
+        {"choices": [{"delta": {"tool_calls": [
+            {"index": 0, "function": {"arguments": 'and": "ls"}'}}]}}]},
+        {"choices": [{"delta": {}}], "usage": {"prompt_tokens": 11,
+                                               "completion_tokens": 7}},
+    ]
+    lines = [f"data: {_json.dumps(c)}" for c in chunks] + ["data: [DONE]"]
+
+    class StubStreamResp:
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def raise_for_status(self): pass
+        def iter_lines(self): return iter(lines)
+
+    class StubClient:
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def stream(self, method, url, json):
+            assert json["stream"] is True
+            assert json["stream_options"] == {"include_usage": True}
+            return StubStreamResp()
+
+    prov = OpenRouterProvider(Config())
+    prov._client = lambda: StubClient()
+    deltas, res = _drain(prov.stream("m", [{"role": "user", "content": "hi"}],
+                                     tools=[{"type": "function"}]))
+    assert "".join(deltas) == "Hello"
+    assert res.text == "Hello"
+    assert len(res.tool_calls) == 1
+    tc = res.tool_calls[0]
+    assert tc["id"] == "call_1" and tc["function"]["name"] == "Bash"
+    assert tc["function"]["arguments"] == '{"command": "ls"}'
+    assert res.tokens_in == 11 and res.tokens_out == 7
+
+
 if __name__ == "__main__":
     import traceback
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]

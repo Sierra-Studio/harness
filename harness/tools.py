@@ -13,7 +13,7 @@ from .sandbox import SandboxBackend
 
 
 class ToolRegistry:
-    BUILTINS = ("SearchTools", "GetTools", "CallTool", "SearchSkills", "GetSkill", "Bash")
+    BUILTINS = ("SearchTools", "GetTools", "CallTool", "SearchSkills", "GetSkill", "Bash", "RenderUI")
 
     def __init__(self, repo: Repository, sandbox: SandboxBackend,
                  mcp_clients: Optional[dict] = None, *, bash_timeout: int = 60,
@@ -73,6 +73,34 @@ class ToolRegistry:
                 "timeout": {"type": "integer",
                             "description": "Optional per-command timeout in seconds."}},
                ["command"]),
+            fn("RenderUI",
+               "Render a rich, interactive UI in the chat instead of plain "
+               "markdown. Use for dashboards, metric/stat cards, comparisons, "
+               "tables, charts, or simple forms — anything clearer as structured "
+               "UI than prose. Pass a single 'root' node; containers nest other "
+               "nodes via their 'children'. Whitelisted node types (field `type`):\n"
+               "  Layout: Stack{gap?,children}, Row{gap?,align?,children}, "
+               "Grid{cols?,children}, Card{title?,children}, "
+               "Tabs{tabs:[{label,children}]}, Divider\n"
+               "  Display: Heading{level?1-3,text}, Text{text,muted?}, "
+               "Markdown{text}, Badge{text,tone?}, Stat{label,value,delta?}, "
+               "Callout{tone?,title?,text}, Code{lang?,code}, "
+               "Image{src,alt?,caption?} (src must be https:// or data:image/), "
+               "Progress{value,max?,label?,tone?}\n"
+               "  Data: Table{columns:[str],rows:[[str|num]]}, "
+               "Chart{kind:'bar'|'line'|'pie',title?,series:[{label,value}]}\n"
+               "  Interactive: Button{label,action,value?,tone?}, "
+               "Select{action,options:[{label,value}]}, Input{action,placeholder?,multiline?}, "
+               "Form{action,submitLabel?,children}\n"
+               "tone is one of neutral|success|warning|danger. Interactive nodes "
+               "carry an 'action' id; when the user clicks/selects/submits, you "
+               "receive their choice as the next user message prefixed "
+               "'[ui-action]'. Put Input/Select inside a Form to collect several "
+               "fields and submit them together (keyed by each field's 'action'). "
+               "Only these types render — anything else is dropped.",
+               {"root": {"type": "object",
+                         "description": "The root UINode (usually a Stack or Card)."}},
+               ["root"]),
         ]
 
     # ---- dispatch ----
@@ -91,6 +119,8 @@ class ToolRegistry:
                 content = self._get_skill(session, args)
             elif name == "Bash":
                 content = self._bash(session, args)
+            elif name == "RenderUI":
+                content = self._render_ui(args)
             else:
                 content = self._index_tool(name, args)
         except Exception as e:  # tools must never crash the loop
@@ -164,6 +194,17 @@ class ToolRegistry:
         if res.stderr:
             parts.append(f"<stderr>\n{res.stderr}\n</stderr>")
         return "\n".join(parts)
+
+    def _render_ui(self, args: dict) -> str:
+        """Display-only tool: the UI tree lives in the call arguments, which the
+        frontend reads and renders. We don't execute anything here — just sanity
+        check the payload and acknowledge so the model knows the render landed.
+        """
+        root = args.get("root")
+        if not isinstance(root, dict) or not isinstance(root.get("type"), str):
+            return ("ERROR: RenderUI needs a 'root' object with a 'type' field "
+                    "(e.g. {\"root\": {\"type\": \"Stack\", \"children\": [...]}}).")
+        return f"UI rendered (root: {root['type']})."
 
     def _call_tool(self, args: dict) -> str:
         """Execute an external (MCP index) tool. The model passes the tool's

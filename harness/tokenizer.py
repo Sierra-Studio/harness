@@ -6,6 +6,7 @@ The authoritative token spend always comes from the provider's `usage` field.
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
 try:  # pragma: no cover - depends on environment
@@ -16,13 +17,23 @@ except Exception:  # pragma: no cover
     _ENC = None
 
 
+# Inlined image payloads (base64 data URLs in multimodal content blocks) are huge
+# but cost only a fixed, image-resolution-dependent number of real tokens — NOT
+# one per base64 character. Counting the raw base64 would massively overcount and
+# trigger spurious summarization, so collapse each to a small flat estimate.
+_DATA_URL = re.compile(r"data:[\w.+/-]+;base64,[A-Za-z0-9+/=\s]+")
+_IMAGE_TOKEN_ESTIMATE = "x" * (1100 * 4)  # ~1100 tokens via the 4-chars/token heuristic
+
+
 def _to_text(content: Any) -> str:
     if isinstance(content, str):
-        return content
-    try:
-        return json.dumps(content, ensure_ascii=False)
-    except (TypeError, ValueError):
-        return str(content)
+        text = content
+    else:
+        try:
+            text = json.dumps(content, ensure_ascii=False)
+        except (TypeError, ValueError):
+            text = str(content)
+    return _DATA_URL.sub(_IMAGE_TOKEN_ESTIMATE, text)
 
 
 def count_tokens(content: Any) -> int:

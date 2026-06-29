@@ -47,6 +47,11 @@ class Harness:
     def run_turn(self, session, message: str):
         return self.loop.run_turn(session, message)
 
+    def run_turn_stream(self, session, message: str):
+        """Yield LoopEvents (text deltas + tool_start/tool_result + final) as the
+        turn runs. See AgentLoop.run_turn_stream."""
+        return self.loop.run_turn_stream(session, message)
+
     def close_session(self, session) -> list[str]:
         self.repo.close_session(session.id)
         self.sandbox.destroy(session.id)
