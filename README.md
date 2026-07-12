@@ -1,8 +1,8 @@
 # Harness
 
-A pluggable, multi-tenant LLM agent harness implementing the design in
-`plano-implementacao.html`: **Memory, Skills, MCP, Tools, Loop**, an **OpenRouter**
-provider, and **token-level observability** — all persisted in **Postgres**.
+A pluggable, multi-tenant LLM agent harness: **Memory, Skills, MCP, Tools, Loop**,
+an **OpenRouter** provider, and **token-level observability** — all persisted in
+**Postgres**.
 
 Every component sits behind an interface, so the provider, the sandbox, and the
 persistence backend are all swappable.
@@ -11,7 +11,7 @@ persistence backend are all swappable.
 
 | Component | Behaviour |
 |---|---|
-| **Soul** | Layered system prompt: a customizable persona (`SOUL.md`, like Hermes' SOUL) + built-in tool guidance. Falls back to a default identity when no SOUL.md is set. |
+| **Persona** | Layered system prompt: a customizable persona (`PERSONA.md`, inspired by Hermes' SOUL) + built-in tool guidance. Falls back to a default identity when no `PERSONA.md` is set. |
 | **Loop** | `perceive → build context → call model → run tools → repeat`, with a per-session **token-budget guard** that stops and returns the partial reply. |
 | **Memory** | Window = `system prompt + chained summary + active turns`. Budget = `context_window − system_prompt − response_reserve`. On overflow: keep the last 10% verbatim, fold the rest (plus the previous summary) into a new **chained** summary. Folded turns stay in Postgres (`in_window=false`). |
 | **Checkpoints** | Every 20 **user** turns, the subject is classified in a few words. |
@@ -32,7 +32,13 @@ uv sync --extra dev    # creates .venv and installs deps from pyproject.toml
 ### 1. Offline demo (no DB, no API key)
 Runs the whole harness with an in-memory repo and a scripted fake provider:
 ```bash
-uv run python demo.py
+uv run python -c "
+from harness.testing import offline_harness
+h = offline_harness()
+session = h.start_session('u1')
+for ev in h.run_turn_stream(session, 'hello'):
+    print(ev)
+"
 ```
 
 ### 2. Tests
@@ -54,56 +60,73 @@ force offline + in-memory:
 DATABASE_URL="" OPENROUTER_API_KEY="" uv run harness chat
 ```
 
-> Not using uv? The core still runs with plain `python` (e.g. `python -m harness.cli chat`);
+> Not using uv? The core still runs with plain `python` (e.g. `python -m harness.interfaces.cli chat`);
 > install deps however you like — they're declared in `pyproject.toml`.
 
-## Soul (persona)
+## Persona
 
 The system prompt is assembled in layers: a **persona** first, then the harness's
 tool guidance (which tells the agent to treat **Bash as its universal fallback** —
 use it whenever no specialized tool fits but the OS can solve the task).
 
-Set the persona by creating a `SOUL.md` (copy `SOUL.md.example`), or point
-`HARNESS_SOUL_PATH` at one, or pass it in code:
+Set the persona by creating a `PERSONA.md`, or point `HARNESS_PERSONA_PATH` at
+one, or pass it in code:
 ```python
-Harness(soul="You are Atlas, a terse senior SRE. You think in shell commands.")
+Harness(persona="You are Atlas, a terse senior SRE. You think in shell commands.")
 ```
-An empty or comment-only `SOUL.md` falls back to a built-in default identity. Pass
-`system_prompt=...` to bypass the layered assembly entirely.
+An empty or comment-only `PERSONA.md` falls back to a built-in default identity.
+Pass `system_prompt=...` to bypass the layered assembly entirely.
+
+> `SOUL.md` is a deprecated fallback filename (one release, with a warning) —
+> use `PERSONA.md`.
 
 ## Configuration
 
 All via env (see `.env.example`): model, budgets, `RESPONSE_RESERVE_TOKENS`,
 `MAX_STEPS`, `CHECKPOINT_EVERY_USER_TURNS`, `SKILL_INDUCTION_EVERY_SESSIONS`,
-`SUMMARY_KEEP_RATIO`, `EMBEDDING_*`, `HARNESS_SOUL_PATH`, `BASH_TIMEOUT`,
+`SUMMARY_KEEP_RATIO`, `EMBEDDING_*`, `HARNESS_PERSONA_PATH`, `BASH_TIMEOUT`,
 `BASH_MAX_OUTPUT`.
 
 ## Project layout
 
+Modules are grouped into subpackages by concern; each subpackage's `__init__.py`
+re-exports its public API, so e.g. `from harness.tools import Bash` still works
+without knowing which submodule `Bash` actually lives in.
+
 ```
 harness/
-  config.py        # env-driven settings (+ tiny .env loader)
-  prompt.py        # Soul: layered system prompt (SOUL.md + tool guidance)
-  tokenizer.py     # tiktoken with heuristic fallback
-  embeddings.py    # OpenAI-compatible embeddings + local fallback
-  models.py        # dataclasses mirroring the schema
-  repository.py    # Repository contract + InMemory + Postgres(pgvector)
-  provider.py      # Provider contract + OpenRouter + FakeProvider
-  sandbox.py       # SandboxBackend contract + local-subprocess impl
-  mcp_client.py    # MCP clients: stdio + Streamable-HTTP, + tool ingestion
-  oauth.py         # OAuth 2.1 flow for remote MCP (discovery, DCR, PKCE, cache)
-  memory.py        # budget, build_window, chained summarize, checkpoints
-  tools.py         # built-ins + Index Tool dispatch
-  skills.py        # induction (every N sessions, deduped)
-  observer.py      # step logging + latency
-  loop.py          # the agent loop + token-budget guard
-  app.py           # Harness facade — wire/swap components here
-  cli.py           # init-db, chat
-schema.sql         # Postgres + pgvector DDL
-docker-compose.yml # pgvector/pgvector:pg16
-pyproject.toml     # project metadata + deps (uv); `harness` console script
-uv.lock            # pinned dependency lockfile
-demo.py            # offline end-to-end demo
+  settings.py         # env-driven Config (+ tiny .env loader)
+  testing.py          # offline_harness() convenience factory for demos/tests
+  core/
+    app.py            # Harness facade — wire/swap components here
+    loop.py           # the agent loop + token-budget guard
+    models.py         # dataclasses mirroring the schema
+  memory/
+    window.py         # Memory: budget, build_window, chained summarize, checkpoints
+    persona.py        # Persona: layered system prompt (PERSONA.md + tool guidance)
+    skills.py         # Skills: induction (every N sessions, deduped)
+  llm/
+    provider.py       # LLM Provider contract + OpenRouter/Azure + FakeProvider
+    registry.py       # ProviderRegistry (explicit, name-keyed provider selection)
+    tokenizer.py      # tiktoken with heuristic fallback
+  tools/
+    builtin.py        # built-in Tools + ToolRegistry + Index Tool dispatch
+    capabilities.py   # ToolProvider capability composition (MCP servers, bundles)
+    sandbox.py        # SandboxBackend contract + local-subprocess impl
+  mcp/
+    client.py         # MCP clients: stdio + Streamable-HTTP, + tool ingestion
+    oauth.py          # OAuth 2.1 flow for remote MCP (discovery, DCR, PKCE, cache)
+  persistence/
+    repository.py     # Repository contract + InMemory + Postgres(pgvector)
+  observability/
+    observer.py       # step logging + latency + pluggable Tracer
+  interfaces/
+    cli.py            # init-db, chat, serve
+    server.py         # SSE HTTP server
+schema.sql            # Postgres + pgvector DDL
+docker-compose.yml    # pgvector/pgvector:pg16
+pyproject.toml        # project metadata + deps (uv); `harness` console script
+uv.lock               # pinned dependency lockfile
 tests/test_core.py
 ```
 
@@ -148,14 +171,23 @@ MCP_FELLOW_OAUTH=1                                # browser OAuth (PKCE, token c
 skipped) and disconnects them on exit. OAuth tokens are cached under
 `~/.harness/mcp-auth/`, so the browser login happens only once.
 
+## Documentation
+
+Full docs (concepts, configuration reference, deployment, API reference) are
+built with [MkDocs](https://www.mkdocs.org/) + Material. Serve them locally:
+
+```bash
+uv sync --extra docs
+uv run mkdocs serve   # http://127.0.0.1:8000
+```
+
 ## Status / notes
 
-- Core logic verified by `tests/test_core.py` (26/26) and `demo.py`.
+- Core logic verified by `tests/test_core.py`.
 - Validated end-to-end against **real Postgres + pgvector** (repository, full-text
   `SearchTools`, summarization, checkpoints, induction, token accounting).
 - OpenRouter integration verified up to billing: the harness authenticates,
   pulls the model context window, and forms valid chat requests. A live
   completion needs account credits (a `402 Payment Required` means no credit).
 - The bundled `LocalSubprocessSandbox` is **not** isolated — replace it with a
-  kernel-isolated backend before exposing untrusted multi-tenant Bash. See the
-  companion architecture guide (`guia-harness.html`).
+  kernel-isolated backend before exposing untrusted multi-tenant Bash.

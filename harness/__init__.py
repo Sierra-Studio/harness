@@ -1,11 +1,66 @@
 """A pluggable, multi-tenant LLM agent harness.
 
 Components: Memory, Skills, MCP, Tools, Loop, OpenRouter provider, Observability.
-See plano-implementacao.html for the design.
 """
 
-__version__ = "1.0.0"
+__version__ = "2.1.0"
 
-from .app import Harness
+from .core import Harness, Hook, TurnResult
+from .llm import ProviderRegistry, register_provider
+from .memory import NullSkills, RepositorySkills, Skills
+from .observability import LoggingTracer, NullTracer, Observer, Tracer
+from .settings import BashConfig, Config, LoopConfig, MemoryConfig, ProviderConfig
+from .tools import (
+    Bash,
+    CallTool,
+    GetSkill,
+    GetTools,
+    McpServer,
+    McpStdioServer,
+    ProviderHost,
+    RenderUI,
+    SearchSkills,
+    SearchTools,
+    Tool,
+    ToolBundle,
+    ToolContext,
+    ToolProvider,
+    default_tools,
+    make_tool,
+)
 
-__all__ = ["Harness"]
+__all__ = [
+    "Harness",
+    "Hook",
+    "TurnResult",
+    "Config",
+    "ProviderConfig",
+    "LoopConfig",
+    "MemoryConfig",
+    "BashConfig",
+    "ProviderRegistry",
+    "register_provider",
+    "Tool",
+    "ToolContext",
+    "default_tools",
+    "make_tool",
+    "SearchTools",
+    "GetTools",
+    "CallTool",
+    "SearchSkills",
+    "GetSkill",
+    "Bash",
+    "RenderUI",
+    "ToolProvider",
+    "ToolBundle",
+    "McpServer",
+    "McpStdioServer",
+    "ProviderHost",
+    "Skills",
+    "NullSkills",
+    "RepositorySkills",
+    "Observer",
+    "Tracer",
+    "NullTracer",
+    "LoggingTracer",
+]

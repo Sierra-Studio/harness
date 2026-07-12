@@ -1,4 +1,5 @@
 """Core unit tests — run with: python3 -m pytest -q  (or python3 tests/test_core.py)."""
+
 from __future__ import annotations
 
 import dataclasses
@@ -7,15 +8,21 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from harness.app import Harness
-from harness.config import Config
-from harness.provider import FakeProvider
-from harness.tokenizer import count_tokens
+from harness.core import Harness
+from harness.llm.provider import FakeProvider
+from harness.llm.tokenizer import count_tokens
+from harness.settings import Config, LoopConfig, MemoryConfig
 
 
-def _harness(provider, **overrides):
+def _harness(provider, *, loop=None, memory=None, **overrides):
     # force in-memory repo so tests never depend on ambient .env / DATABASE_URL
-    cfg = dataclasses.replace(Config(), database_url="", **overrides)
+    cfg = dataclasses.replace(
+        Config(),
+        database_url="",
+        loop=loop or LoopConfig(),
+        memory=memory or MemoryConfig(),
+        **overrides,
+    )
     return Harness(cfg, system_prompt="sys.", provider=provider)
 
 
@@ -30,33 +37,41 @@ def test_search_skills_keyword_and_get_skill():
     p = FakeProvider(context_window=4000)
     h = _harness(p)
     uid = h.repo.get_or_create_user("u1").id
-    h.repo.add_skill(uid, "deploy_web", "Ship the web app",
-                     "1. run tests\n2. push to prod", "authored")
-    h.repo.add_skill(uid, "rotate_keys", "Rotate API credentials",
-                     "1. mint new key\n2. revoke old", "authored")
+    h.repo.add_skill(
+        uid, "deploy_web", "Ship the web app", "1. run tests\n2. push to prod", "authored"
+    )
+    h.repo.add_skill(
+        uid, "rotate_keys", "Rotate API credentials", "1. mint new key\n2. revoke old", "authored"
+    )
     s = h.start_session("u1")
     # SearchSkills returns name + summary only (progressive disclosure)
-    found = h.tools.dispatch(s, {"id": "1", "function": {
-        "name": "SearchSkills", "arguments": '{"query": "credentials"}'}})["content"]
+    found = h.tools.dispatch(
+        s,
+        {"id": "1", "function": {"name": "SearchSkills", "arguments": '{"query": "credentials"}'}},
+    )["content"]
     assert "rotate_keys" in found and "deploy_web" not in found
-    assert "mint new key" not in found            # body is NOT in the summary view
+    assert "mint new key" not in found  # body is NOT in the summary view
     # GetSkill returns the full body by name
-    body = h.tools.dispatch(s, {"id": "2", "function": {
-        "name": "GetSkill", "arguments": '{"name": "rotate_keys"}'}})["content"]
+    body = h.tools.dispatch(
+        s, {"id": "2", "function": {"name": "GetSkill", "arguments": '{"name": "rotate_keys"}'}}
+    )["content"]
     assert "mint new key" in body and "revoke old" in body
     # unknown name is handled gracefully
-    miss = h.tools.dispatch(s, {"id": "3", "function": {
-        "name": "GetSkill", "arguments": '{"name": "nope"}'}})["content"]
+    miss = h.tools.dispatch(
+        s, {"id": "3", "function": {"name": "GetSkill", "arguments": '{"name": "nope"}'}}
+    )["content"]
     assert "not found" in miss.lower()
 
 
 def test_skills_injected_into_prompt_per_user():
     import datetime
+
     p = FakeProvider(context_window=4000)
     h = _harness(p)
     alice = h.repo.get_or_create_user("alice").id
-    h.repo.add_skill(alice, "deploy_web", "Ship the web app to prod",
-                     "1. run tests\n2. push to prod", "authored")
+    h.repo.add_skill(
+        alice, "deploy_web", "Ship the web app to prod", "1. run tests\n2. push to prod", "authored"
+    )
     sa = h.start_session("alice")
     p.queue(content="ok")
     h.run_turn(sa, "hi")
@@ -69,8 +84,7 @@ def test_skills_injected_into_prompt_per_user():
     # base ("sys.") < catalog heading < today's date
     assert sys_msg.index("sys.") < sys_msg.index("# Your saved skills")
     assert sys_msg.index("# Your saved skills") < sys_msg.index("Today's date is")
-    assert sys_msg.rstrip().endswith(
-        f"Today's date is {datetime.date.today().isoformat()}.")
+    assert sys_msg.rstrip().endswith(f"Today's date is {datetime.date.today().isoformat()}.")
     # a different tenant with no skills gets no catalog (isolation)
     sb = h.start_session("bob")
     p.queue(content="ok")
@@ -80,13 +94,13 @@ def test_skills_injected_into_prompt_per_user():
 
 
 def test_skills_block_truncates_above_limit():
-    from harness.prompt import skills_block
+    from harness.memory.persona import skills_block
     from harness.models import Skill
-    skills = [Skill(id=str(i), user_id="u", name=f"s{i}", summary="x", body="b")
-              for i in range(35)]
+
+    skills = [Skill(id=str(i), user_id="u", name=f"s{i}", summary="x", body="b") for i in range(35)]
     block = skills_block(skills, limit=30)
     assert "s0:" in block and "s29:" in block
-    assert "s30:" not in block            # beyond the limit
+    assert "s30:" not in block  # beyond the limit
     assert "5 more not shown" in block and "SearchSkills" in block
 
 
@@ -102,8 +116,11 @@ def test_loop_basic_reply():
 
 def test_loop_tool_call_runs_bash():
     p = FakeProvider(context_window=4000)
-    p.queue(tool_calls=[{"id": "c1", "function": {
-        "name": "Bash", "arguments": '{"command": "echo xyz"}'}}])
+    p.queue(
+        tool_calls=[
+            {"id": "c1", "function": {"name": "Bash", "arguments": '{"command": "echo xyz"}'}}
+        ]
+    )
     p.queue(content="done")
     h = _harness(p)
     s = h.start_session("u1")
@@ -116,47 +133,75 @@ def test_loop_tool_call_runs_bash():
 def test_budget_guard_returns_partial():
     p = FakeProvider(context_window=4000)
     for _ in range(10):
-        p.queue(content="...", tool_calls=[{"id": "x", "function": {
-            "name": "Bash", "arguments": '{"command": "echo k"}'}}])
-    h = _harness(p, token_budget_per_session=20)
+        p.queue(
+            content="...",
+            tool_calls=[
+                {"id": "x", "function": {"name": "Bash", "arguments": '{"command": "echo k"}'}}
+            ],
+        )
+    h = _harness(p, loop=LoopConfig(token_budget_per_session=20))
     s = h.start_session("u1")
     r = h.run_turn(s, "expensive")
     assert r.status == "budget_exhausted"
     assert h.repo.get_session(s.id).status == "budget_exhausted"
 
 
-def test_soul_default_and_custom():
-    from harness.prompt import build_system_prompt, load_soul, DEFAULT_IDENTITY
+def test_persona_default_and_custom():
+    from harness.memory.persona import DEFAULT_IDENTITY, build_system_prompt, load_persona
+    from harness.tools.builtin import default_tools
+
     # comment-only / empty -> default identity
-    assert load_soul(explicit="<!-- just a comment -->") == DEFAULT_IDENTITY
-    assert load_soul(explicit="   ") == DEFAULT_IDENTITY
-    # explicit persona wins and tool guidance (incl. Bash policy) is appended
-    sp = build_system_prompt(soul="You are Atlas, a terse SRE.")
+    assert load_persona(explicit="<!-- just a comment -->") == DEFAULT_IDENTITY
+    assert load_persona(explicit="   ") == DEFAULT_IDENTITY
+    # explicit persona wins and guidance composed from the active tools is appended
+    sp = build_system_prompt(persona="You are Atlas, a terse SRE.", tools=default_tools())
     assert "Atlas" in sp
     assert "Bash" in sp and "fallback" in sp.lower()
+    # without tools, no guidance layer is composed (persona only)
+    assert "Bash" not in build_system_prompt(persona="You are Atlas, a terse SRE.")
 
 
-def test_soul_loaded_from_file(tmp_path):
-    from harness.prompt import build_system_prompt
-    soul = tmp_path / "SOUL.md"
-    soul.write_text("<!-- header -->\nYou are Nyx, a poetic assistant.")
-    sp = build_system_prompt(str(soul))
+def test_persona_loaded_from_file(tmp_path):
+    from harness.memory.persona import build_system_prompt
+
+    persona = tmp_path / "PERSONA.md"
+    persona.write_text("<!-- header -->\nYou are Nyx, a poetic assistant.")
+    sp = build_system_prompt(str(persona))
     assert "Nyx" in sp and "poetic" in sp
 
 
-def test_harness_uses_soul():
+def test_persona_deprecated_soul_fallback(tmp_path, monkeypatch):
+    import warnings
+
+    from harness.memory.persona import build_system_prompt
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "SOUL.md").write_text("You are Nyx, a poetic assistant.")
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        sp = build_system_prompt()  # no PERSONA.md in cwd -> falls back to SOUL.md
+    assert "Nyx" in sp
+    assert any(issubclass(w.category, DeprecationWarning) for w in caught)
+
+
+def test_harness_uses_persona():
     import dataclasses
-    from harness.app import Harness
-    from harness.config import Config
+
+    from harness.core import Harness
+    from harness.settings import Config
+
     p = FakeProvider(context_window=4000)
-    h = Harness(dataclasses.replace(Config(), database_url=""),
-                soul="You are Atlas.", provider=p)
+    h = Harness(
+        dataclasses.replace(Config(), database_url=""), persona="You are Atlas.", provider=p
+    )
     assert "Atlas" in h.loop.system_prompt
 
 
 def test_today_line_format():
     from datetime import date
-    from harness.prompt import today_line, with_today
+
+    from harness.memory.persona import today_line, with_today
+
     assert today_line(date(2026, 6, 25)) == "Today's date is 2026-06-25."
     sp = with_today("BASE PROMPT", date(2026, 1, 2))
     assert sp.endswith("Today's date is 2026-01-02.")
@@ -165,6 +210,7 @@ def test_today_line_format():
 
 def test_loop_appends_today_date_to_system_prompt():
     import datetime
+
     p = FakeProvider(context_window=4000)
     p.queue(content="ok")
     h = _harness(p)
@@ -173,19 +219,20 @@ def test_loop_appends_today_date_to_system_prompt():
     # the system message sent to the provider must carry today's date at the end
     sent = p.calls[-1]
     system_msg = sent[0]["content"]
-    assert system_msg.rstrip().endswith(
-        f"Today's date is {datetime.date.today().isoformat()}.")
+    assert system_msg.rstrip().endswith(f"Today's date is {datetime.date.today().isoformat()}.")
 
 
 def test_bash_cwd_persists_across_calls():
     import json
+
     p = FakeProvider(context_window=4000)
     h = _harness(p)
     s = h.start_session("u1")
 
     def bash(cmd):
-        return h.tools.dispatch(s, {"id": "x", "function": {
-            "name": "Bash", "arguments": json.dumps({"command": cmd})}})["content"]
+        return h.tools.dispatch(
+            s, {"id": "x", "function": {"name": "Bash", "arguments": json.dumps({"command": cmd})}}
+        )["content"]
 
     bash("mkdir -p a/b && cd a/b")
     out = bash("pwd")
@@ -194,17 +241,24 @@ def test_bash_cwd_persists_across_calls():
 
 def test_bash_reports_exit_and_stderr():
     import json
+
     p = FakeProvider(context_window=4000)
     h = _harness(p)
     s = h.start_session("u1")
-    out = h.tools.dispatch(s, {"id": "x", "function": {
-        "name": "Bash", "arguments": json.dumps({"command": "ls /no/such/path"})}})["content"]
+    out = h.tools.dispatch(
+        s,
+        {
+            "id": "x",
+            "function": {"name": "Bash", "arguments": json.dumps({"command": "ls /no/such/path"})},
+        },
+    )["content"]
     assert "<exit_code>" in out and "<exit_code>0</exit_code>" not in out
     assert "<stderr>" in out
 
 
 def test_bash_truncates_large_output():
-    from harness.sandbox import LocalSubprocessSandbox
+    from harness.tools.sandbox import LocalSubprocessSandbox
+
     sb = LocalSubprocessSandbox(max_output=500)
     res = sb.exec("sess", "for i in $(seq 1 2000); do echo line-$i; done")
     assert "characters elided" in res.stdout
@@ -216,43 +270,45 @@ def test_unlimited_token_budget():
     p = FakeProvider(context_window=4000)
     # would-be expensive run: many tool calls, but budget 0 == no limit
     for _ in range(6):
-        p.queue(content="...", tool_calls=[{"id": "x", "function": {
-            "name": "Bash", "arguments": '{"command": "echo k"}'}}])
+        p.queue(
+            content="...",
+            tool_calls=[
+                {"id": "x", "function": {"name": "Bash", "arguments": '{"command": "echo k"}'}}
+            ],
+        )
     p.queue(content="finished")
-    h = _harness(p, token_budget_per_session=0)
+    h = _harness(p, loop=LoopConfig(token_budget_per_session=0))
     s = h.start_session("u1")
     r = h.run_turn(s, "do a lot")
-    assert r.status == "ok" and r.text == "finished"   # never budget_exhausted
+    assert r.status == "ok" and r.text == "finished"  # never budget_exhausted
     assert h.repo.get_session(s.id).status != "budget_exhausted"
 
 
 def test_budget_config_unlimited_parsing():
-    import os
-    from harness.config import _budget
+    from harness.settings import _budget
+
     for val in ("0", "none", "unlimited", "-1"):
-        os.environ["TOKEN_BUDGET_PER_SESSION"] = val
-        try:
-            assert _budget("TOKEN_BUDGET_PER_SESSION", 500_000) == 0, val
-        finally:
-            os.environ.pop("TOKEN_BUDGET_PER_SESSION", None)
-    os.environ["TOKEN_BUDGET_PER_SESSION"] = "12345"
-    try:
-        assert _budget("TOKEN_BUDGET_PER_SESSION", 500_000) == 12345
-    finally:
-        os.environ.pop("TOKEN_BUDGET_PER_SESSION", None)
+        env = {"TOKEN_BUDGET_PER_SESSION": val}
+        assert _budget(env, "TOKEN_BUDGET_PER_SESSION", 500_000) == 0, val
+    env = {"TOKEN_BUDGET_PER_SESSION": "12345"}
+    assert _budget(env, "TOKEN_BUDGET_PER_SESSION", 500_000) == 12345
 
 
 def test_summarization_compresses_window():
     p = FakeProvider(context_window=140)
-    h = _harness(p, response_reserve_tokens=10, summary_keep_ratio=0.2)
+    h = _harness(
+        p,
+        loop=LoopConfig(response_reserve_tokens=10),
+        memory=MemoryConfig(summary_keep_ratio=0.2),
+    )
     s = h.start_session("u1")
-    for i in range(6):
+    for _ in range(6):
         p.queue(content="answer " + "z" * 80)
         h.run_turn(s, "question " + "w" * 60)
     assert len(h.repo.summaries) >= 1
     active = h.repo.active_turns(s.id)
     total = [t for t in h.repo.turns if t.session_id == s.id]
-    assert len(active) < len(total)          # window is a compressed projection
+    assert len(active) < len(total)  # window is a compressed projection
     # chaining: latest summary points back to a parent after >1 fold
     if len(h.repo.summaries) > 1:
         assert h.repo.summaries[-1].parent_id is not None
@@ -260,7 +316,7 @@ def test_summarization_compresses_window():
 
 def test_checkpoint_every_n_user_turns():
     p = FakeProvider(context_window=4000)
-    h = _harness(p, checkpoint_every_user_turns=3)
+    h = _harness(p, memory=MemoryConfig(checkpoint_every_user_turns=3))
     s = h.start_session("u1")
     for i in range(3):
         p.queue(content="ok")
@@ -273,9 +329,11 @@ def test_multi_tenant_isolation():
     p = FakeProvider(context_window=4000)
     h = _harness(p)
     sa = h.start_session("alice")
-    p.queue(content="a"); h.run_turn(sa, "hi from alice")
+    p.queue(content="a")
+    h.run_turn(sa, "hi from alice")
     sb = h.start_session("bob")
-    p.queue(content="b"); h.run_turn(sb, "hi from bob")
+    p.queue(content="b")
+    h.run_turn(sb, "hi from bob")
     bob_id = h.repo.get_or_create_user("bob").id
     bob_turns = [t for t in h.repo.turns if t.user_id == bob_id]
     assert bob_turns and all(t.user_id == bob_id for t in bob_turns)
@@ -286,8 +344,9 @@ def test_skill_induction_and_dedup():
     class P(FakeProvider):
         def induce_skills(self, model, signals):
             return [{"name": "n", "summary": "s", "body": "do x"}]
+
     p = P(context_window=4000)
-    h = _harness(p, skill_induction_every_sessions=2)
+    h = _harness(p, memory=MemoryConfig(skill_induction_every_sessions=2))
     uid = h.repo.get_or_create_user("alice").id
     for _ in range(2):
         s = h.start_session("alice")
@@ -307,15 +366,22 @@ def test_search_tools_keyword_match():
     h.repo.upsert_tool("mail", "send_email", "Send an email message", {})
     h.repo.upsert_tool("fs", "read_file", "Read a file from disk", {})
     s = h.start_session("u1")
-    out = h.tools.dispatch(s, {"id": "1", "function": {
-        "name": "SearchTools", "arguments": '{"query": "email the customer"}'}})
+    out = h.tools.dispatch(
+        s,
+        {
+            "id": "1",
+            "function": {"name": "SearchTools", "arguments": '{"query": "email the customer"}'},
+        },
+    )
     assert "send_email" in out["content"]
-    assert "read_file" not in out["content"]   # keyword search excludes non-matches
+    assert "read_file" not in out["content"]  # keyword search excludes non-matches
 
 
 def test_mcp_http_servers_config():
     import os
-    from harness.config import mcp_http_servers
+
+    from harness.settings import mcp_http_servers
+
     os.environ["MCP_HTTP_SERVERS"] = "fellow=https://fellow.app/mcp, other=https://x/mcp"
     os.environ["MCP_FELLOW_TOKEN"] = "tok123"
     os.environ.pop("MCP_OTHER_TOKEN", None)
@@ -324,29 +390,36 @@ def test_mcp_http_servers_config():
         by_name = {s["name"]: s for s in servers}
         assert by_name["fellow"]["url"] == "https://fellow.app/mcp"
         assert by_name["fellow"]["headers"]["Authorization"] == "Bearer tok123"
-        assert by_name["other"]["headers"] == {}   # no token -> no auth header
+        assert by_name["other"]["headers"] == {}  # no token -> no auth header
     finally:
         os.environ.pop("MCP_HTTP_SERVERS", None)
         os.environ.pop("MCP_FELLOW_TOKEN", None)
 
 
 def test_oauth_pkce_and_helpers():
-    import base64, hashlib
-    from harness.oauth import make_pkce, origin, parse_resource_metadata_url, OAuthClient
+    import base64
+    import hashlib
+
+    from harness.mcp.oauth import OAuthClient, make_pkce, origin, parse_resource_metadata_url
+
     verifier, challenge = make_pkce()
-    expected = base64.urlsafe_b64encode(
-        hashlib.sha256(verifier.encode()).digest()).rstrip(b"=").decode()
-    assert challenge == expected                       # S256 binding holds
+    expected = (
+        base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b"=").decode()
+    )
+    assert challenge == expected  # S256 binding holds
     assert origin("https://fellow.app/mcp/x?y=1") == "https://fellow.app"
-    assert parse_resource_metadata_url(
-        'Bearer resource_metadata="https://as/.well-known/x"') == "https://as/.well-known/x"
+    assert (
+        parse_resource_metadata_url('Bearer resource_metadata="https://as/.well-known/x"')
+        == "https://as/.well-known/x"
+    )
     assert parse_resource_metadata_url("Bearer realm=foo") is None
     assert OAuthClient._expired({"obtained_at": 0, "expires_in": 3600}) is True
-    assert OAuthClient._expired({}) is False           # no expiry info -> not expired
+    assert OAuthClient._expired({}) is False  # no expiry info -> not expired
 
 
 def test_oauth_token_cache(tmp_path):
-    from harness.oauth import OAuthClient, OAuthConfig
+    from harness.mcp.oauth import OAuthClient, OAuthConfig
+
     oc = OAuthClient(http_client=None, cfg=OAuthConfig(cache_dir=tmp_path))
     oc._save_cache("fellow.app", {"client_id": "c1", "tokens": {"access_token": "a"}})
     loaded = oc._load_cache("fellow.app")
@@ -356,32 +429,52 @@ def test_oauth_token_cache(tmp_path):
 
 def test_http_mcp_oauth_retry_on_401():
     """A 401 triggers the OAuth flow (stubbed) and the request is retried with a token."""
-    from harness.mcp_client import HttpMcpClient
+    from harness.mcp.client import HttpMcpClient
 
     class Resp401:
         status_code = 401
         headers = {"www-authenticate": 'Bearer resource_metadata="https://as/meta"'}
-        def __enter__(self): return self
-        def __exit__(self, *a): return False
-        def read(self): return b""
-        def raise_for_status(self): raise AssertionError("should retry, not raise")
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self):
+            return b""
+
+        def raise_for_status(self):
+            raise AssertionError("should retry, not raise")
 
     class RespOK:
         status_code = 200
         headers = {"content-type": "application/json"}
-        def __init__(self, payload): self._p = payload
-        def __enter__(self): return self
-        def __exit__(self, *a): return False
-        def raise_for_status(self): pass
+
+        def __init__(self, payload):
+            self._p = payload
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def raise_for_status(self):
+            pass
+
         def read(self):
             import json
+
             return json.dumps(self._p)
 
     class StubHttp:
-        def __init__(self): self.calls = 0
+        def __init__(self):
+            self.calls = 0
+
         def stream(self, method, url, json, headers):
             self.calls += 1
-            if self.calls == 1:                         # first attempt: unauthorized
+            if self.calls == 1:  # first attempt: unauthorized
                 assert "Authorization" not in headers
                 return Resp401()
             assert headers.get("Authorization") == "Bearer tok-xyz"
@@ -395,7 +488,8 @@ def test_http_mcp_oauth_retry_on_401():
 
 
 def test_http_mcp_sse_parser():
-    from harness.mcp_client import HttpMcpClient
+    from harness.mcp.client import HttpMcpClient
+
     lines = [
         "event: message",
         'data: {"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18"}}',
@@ -410,57 +504,96 @@ def test_http_mcp_sse_parser():
 
 def test_http_mcp_call_via_stub_transport():
     """End-to-end dispatch of an HTTP MCP tool using a stubbed httpx client."""
-    from harness.mcp_client import HttpMcpClient, ingest_server
+    from harness.mcp.client import HttpMcpClient, ingest_server
+
     p = FakeProvider(context_window=4000)
     h = _harness(p)
 
     class StubResp:
         status_code = 200
+
         def __init__(self, payload):
             self._payload = payload
             self.headers = {"content-type": "application/json"}
-        def __enter__(self): return self
-        def __exit__(self, *a): return False
-        def raise_for_status(self): pass
-        def read(self): import json; return json.dumps(self._payload)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def raise_for_status(self):
+            pass
+
+        def read(self):
+            import json
+
+            return json.dumps(self._payload)
 
     class StubHttp:
         def stream(self, method, url, json, headers):
             m = json["method"]
             if m == "initialize":
-                return StubResp({"jsonrpc": "2.0", "id": json["id"],
-                                 "result": {"protocolVersion": "2025-06-18"}})
+                return StubResp(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": json["id"],
+                        "result": {"protocolVersion": "2025-06-18"},
+                    }
+                )
             if m == "tools/list":
-                return StubResp({"jsonrpc": "2.0", "id": json["id"], "result": {
-                    "tools": [{"name": "get_meetings",
-                               "description": "List recent meetings", "inputSchema": {}}]}})
+                return StubResp(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": json["id"],
+                        "result": {
+                            "tools": [
+                                {
+                                    "name": "get_meetings",
+                                    "description": "List recent meetings",
+                                    "inputSchema": {},
+                                }
+                            ]
+                        },
+                    }
+                )
             if m == "tools/call":
-                return StubResp({"jsonrpc": "2.0", "id": json["id"],
-                                 "result": {"meetings": ["standup"]}})
+                return StubResp(
+                    {"jsonrpc": "2.0", "id": json["id"], "result": {"meetings": ["standup"]}}
+                )
             return StubResp({"jsonrpc": "2.0", "id": json["id"], "result": {}})
-        def post(self, url, json, headers): pass  # notifications
-        def close(self): pass
+
+        def post(self, url, json, headers):
+            pass  # notifications
+
+        def close(self):
+            pass
 
     client = HttpMcpClient("https://example.test/mcp", name="stub")
-    client._client = StubHttp()                       # inject stub transport
-    client._notify("notifications/initialized", {})   # no-op
+    client._client = StubHttp()  # inject stub transport
+    client._notify("notifications/initialized", {})  # no-op
     ingest_server(h.repo, client)
     h.tools.mcp_clients["stub"] = client
 
     s = h.start_session("u1")
     # found via keyword search
-    found = h.tools.dispatch(s, {"id": "1", "function": {
-        "name": "SearchTools", "arguments": '{"query": "recent meetings"}'}})
+    found = h.tools.dispatch(
+        s,
+        {
+            "id": "1",
+            "function": {"name": "SearchTools", "arguments": '{"query": "recent meetings"}'},
+        },
+    )
     assert "get_meetings" in found["content"]
     # dispatched through the HTTP client
-    out = h.tools.dispatch(s, {"id": "2", "function": {
-        "name": "get_meetings", "arguments": "{}"}})
+    out = h.tools.dispatch(s, {"id": "2", "function": {"name": "get_meetings", "arguments": "{}"}})
     assert "standup" in out["content"]
 
 
 # --------------------------------------------------------------------------
 # Streaming: provider.stream, loop.run_turn_stream, OpenRouter SSE accumulation
 # --------------------------------------------------------------------------
+
 
 def _drain(gen):
     """Consume a stream() generator: return (deltas, final ModelResult)."""
@@ -479,7 +612,7 @@ def test_fake_stream_matches_complete():
     p.queue(content="hello streamed world")
     deltas, res = _drain(p.stream("m", [{"role": "user", "content": "hi"}]))
     assert "".join(deltas) == "hello streamed world"
-    assert len(deltas) >= 2                       # actually chunked, not one blob
+    assert len(deltas) >= 2  # actually chunked, not one blob
     # token math identical to complete() on the same script/input
     p2 = FakeProvider(context_window=4000)
     p2.queue(content="hello streamed world")
@@ -489,8 +622,12 @@ def test_fake_stream_matches_complete():
 
 def test_run_turn_stream_event_order_and_final():
     p = FakeProvider(context_window=4000)
-    p.queue(content="thinking", tool_calls=[{"id": "c1", "function": {
-        "name": "Bash", "arguments": '{"command": "echo xyz"}'}}])
+    p.queue(
+        content="thinking",
+        tool_calls=[
+            {"id": "c1", "function": {"name": "Bash", "arguments": '{"command": "echo xyz"}'}}
+        ],
+    )
     p.queue(content="all done")
     h = _harness(p)
     s = h.start_session("u1")
@@ -512,16 +649,24 @@ def test_run_turn_stream_event_order_and_final():
 
 def test_run_turn_equals_streamed_final():
     """run_turn (the drainer) returns exactly the stream's final TurnResult."""
+
     def make():
         p = FakeProvider(context_window=4000)
-        p.queue(content="x", tool_calls=[{"id": "c1", "function": {
-            "name": "Bash", "arguments": '{"command": "echo hi"}'}}])
+        p.queue(
+            content="x",
+            tool_calls=[
+                {"id": "c1", "function": {"name": "Bash", "arguments": '{"command": "echo hi"}'}}
+            ],
+        )
         p.queue(content="final answer")
         return _harness(p)
-    h1 = make(); r1 = h1.run_turn(h1.start_session("u1"), "go")
+
+    h1 = make()
+    r1 = h1.run_turn(h1.start_session("u1"), "go")
     h2 = make()
-    streamed = [e for e in h2.run_turn_stream(h2.start_session("u1"), "go")
-                if e.kind == "final"][0].result
+    streamed = [e for e in h2.run_turn_stream(h2.start_session("u1"), "go") if e.kind == "final"][
+        0
+    ].result
     assert dataclasses.astuple(r1) == dataclasses.astuple(streamed)
 
 
@@ -530,39 +675,67 @@ def test_openrouter_stream_sse_accumulation():
     into one ModelResult; usage from the final chunk is captured."""
     import json as _json
 
-    from harness.provider import OpenRouterProvider
+    from harness.llm.provider import OpenRouterProvider
 
     chunks = [
         {"choices": [{"delta": {"content": "Hel"}}]},
         {"choices": [{"delta": {"content": "lo"}}]},
-        {"choices": [{"delta": {"tool_calls": [
-            {"index": 0, "id": "call_1", "type": "function",
-             "function": {"name": "Bash", "arguments": '{"comm'}}]}}]},
-        {"choices": [{"delta": {"tool_calls": [
-            {"index": 0, "function": {"arguments": 'and": "ls"}'}}]}}]},
-        {"choices": [{"delta": {}}], "usage": {"prompt_tokens": 11,
-                                               "completion_tokens": 7}},
+        {
+            "choices": [
+                {
+                    "delta": {
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "id": "call_1",
+                                "type": "function",
+                                "function": {"name": "Bash", "arguments": '{"comm'},
+                            }
+                        ]
+                    }
+                }
+            ]
+        },
+        {
+            "choices": [
+                {"delta": {"tool_calls": [{"index": 0, "function": {"arguments": 'and": "ls"}'}}]}}
+            ]
+        },
+        {"choices": [{"delta": {}}], "usage": {"prompt_tokens": 11, "completion_tokens": 7}},
     ]
     lines = [f"data: {_json.dumps(c)}" for c in chunks] + ["data: [DONE]"]
 
     class StubStreamResp:
-        def __enter__(self): return self
-        def __exit__(self, *a): return False
-        def raise_for_status(self): pass
-        def iter_lines(self): return iter(lines)
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def raise_for_status(self):
+            pass
+
+        def iter_lines(self):
+            return iter(lines)
 
     class StubClient:
-        def __enter__(self): return self
-        def __exit__(self, *a): return False
-        def stream(self, method, url, json):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def stream(self, method, url, json, params):
             assert json["stream"] is True
             assert json["stream_options"] == {"include_usage": True}
+            assert params == {}
             return StubStreamResp()
 
-    prov = OpenRouterProvider(Config())
+    prov = OpenRouterProvider(Config().provider)
     prov._client = lambda: StubClient()
-    deltas, res = _drain(prov.stream("m", [{"role": "user", "content": "hi"}],
-                                     tools=[{"type": "function"}]))
+    deltas, res = _drain(
+        prov.stream("m", [{"role": "user", "content": "hi"}], tools=[{"type": "function"}])
+    )
     assert "".join(deltas) == "Hello"
     assert res.text == "Hello"
     assert len(res.tool_calls) == 1
@@ -572,8 +745,371 @@ def test_openrouter_stream_sse_accumulation():
     assert res.tokens_in == 11 and res.tokens_out == 7
 
 
+def _spec_names(h):
+    return [s["function"]["name"] for s in h.tools.tool_specs()]
+
+
+def _htools(**tool_kwargs):
+    """Harness with in-memory repo + tool/hook kwargs injected via the
+    constructor (tools=[...] / hooks=[...])."""
+    cfg = dataclasses.replace(Config(), database_url="")
+    return Harness(
+        cfg, system_prompt="sys.", provider=FakeProvider(context_window=4000), **tool_kwargs
+    )
+
+
+def test_builtin_tools_enabled_by_default():
+    h = _htools()
+    from harness.tools.builtin import default_tools
+
+    assert set(_spec_names(h)) == {t.name for t in default_tools()}
+
+
+def test_no_tools_via_false_or_empty():
+    """None => all built-ins; False or [] => no tools at all."""
+    assert _spec_names(_htools(tools=False)) == []
+    assert _spec_names(_htools(tools=[])) == []
+
+
+def test_tools_list_is_the_selection():
+    """The tools list IS the selection: only listed tools appear in the specs,
+    and an omitted built-in isn't runnable (falls through to the MCP-index
+    lookup, which reports it unknown)."""
+    from harness.tools.builtin import Bash, SearchTools
+
+    h = _htools(tools=[Bash(), SearchTools()])
+    s = h.start_session("u1")
+    assert set(_spec_names(h)) == {"Bash", "SearchTools"}
+    out = h.tools.dispatch(s, {"id": "x", "function": {"name": "RenderUI", "arguments": "{}"}})
+    assert "Unknown tool" in out["content"]
+
+
+def test_custom_tool_injected_and_dispatched():
+    """A developer tool passed via tools= appears in the specs and its handler
+    runs on dispatch, receiving the parsed arguments."""
+    from harness.tools.builtin import default_tools, make_tool
+
+    seen = {}
+
+    def handler(session, args):
+        seen["args"] = args
+        return f"echo:{args.get('q', '')}"
+
+    tool = make_tool(
+        "MySearch",
+        "Search my index.",
+        {"type": "object", "properties": {"q": {"type": "string"}}, "required": ["q"]},
+        handler,
+    )
+    h = _htools(tools=[*default_tools(), tool])
+    s = h.start_session("u1")
+    assert "MySearch" in _spec_names(h)
+    out = h.tools.dispatch(
+        s, {"id": "x", "function": {"name": "MySearch", "arguments": '{"q": "hello"}'}}
+    )
+    assert out["content"] == "echo:hello"
+    assert seen["args"] == {"q": "hello"}
+
+
+def test_duplicate_tool_name_raises():
+    from harness.tools.builtin import Bash, make_tool
+
+    dup = make_tool("Bash", "nope", {"type": "object", "properties": {}}, lambda s, a: "")
+    try:
+        _htools(tools=[Bash(), dup])
+    except ValueError as e:
+        assert "Bash" in str(e)
+    else:
+        raise AssertionError("expected ValueError for duplicate tool name")
+
+
+def test_hooks_fire_and_transform():
+    """Hooks fire at each lifecycle point in list order; before_tool/after_tool
+    can transform the args and result."""
+    from harness.core.loop import Hook
+    from harness.tools.builtin import default_tools
+
+    events = []
+
+    class Recorder(Hook):
+        def __init__(self, tag):
+            self.tag = tag
+
+        def before_turn(self, session, message):
+            events.append((self.tag, "before_turn", message))
+
+        def after_turn(self, session, result):
+            events.append((self.tag, "after_turn", result.status))
+
+        def before_tool(self, session, name, args):
+            events.append((self.tag, "before_tool", name))
+
+    class Rewrite(Hook):
+        def before_tool(self, session, name, args):
+            return {"command": "echo rewritten"}  # transform the call
+
+        def after_tool(self, session, name, result):
+            return result + "\n[audited]"  # transform the result
+
+    p = FakeProvider(context_window=4000)
+    p.queue(
+        tool_calls=[
+            {"id": "c1", "function": {"name": "Bash", "arguments": '{"command": "echo orig"}'}}
+        ]
+    )
+    p.queue(content="done")
+    cfg = dataclasses.replace(Config(), database_url="")
+    h = Harness(
+        cfg,
+        system_prompt="sys.",
+        provider=p,
+        tools=default_tools(),
+        hooks=[Recorder("a"), Rewrite()],
+    )
+    s = h.start_session("u1")
+    r = h.run_turn(s, "go")
+
+    # before_turn fired once, after_turn fired with the final status
+    assert ("a", "before_turn", "go") in events
+    assert ("a", "after_turn", "ok") in events
+    # before_tool observed the Bash call
+    assert ("a", "before_tool", "Bash") in events
+    # Rewrite.before_tool changed the command; Rewrite.after_tool annotated output
+    tool_turns = [t for t in h.repo.turns if t.role == "tool"]
+    assert "rewritten" in tool_turns[0].content["content"]
+    assert "orig" not in tool_turns[0].content["content"]
+    assert "[audited]" in tool_turns[0].content["content"]
+    assert r.status == "ok"
+
+
+def test_prompt_guidance_reflects_active_tools():
+    """The composed prompt includes guidance only for active tools (a custom
+    tool's guidance appears; an omitted built-in's does not)."""
+    from harness.tools.builtin import SearchTools, make_tool
+
+    custom = make_tool(
+        "Weather",
+        "Get weather.",
+        {"type": "object", "properties": {}},
+        lambda s, a: "sunny",
+        guidance="- Weather(): fetch the local forecast.",
+    )
+    # No system_prompt override, so the prompt is composed from the active tools.
+    cfg = dataclasses.replace(Config(), database_url="")
+    h = Harness(cfg, provider=FakeProvider(context_window=4000), tools=[SearchTools(), custom])
+    sp = h.loop.system_prompt
+    assert "fetch the local forecast" in sp  # custom tool guidance present
+    assert "per-session sandbox" not in sp  # Bash omitted -> its guidance absent
+
+
+def test_detect_provider_precedence():
+    """azure_endpoint wins over openrouter_api_key; neither => FakeProvider.
+    detect_provider is the opt-in CLI/demo heuristic; Harness never calls it."""
+    from harness.llm.provider import (
+        AzureFoundryProvider,
+        FakeProvider,
+        OpenRouterProvider,
+        detect_provider,
+        provider_label,
+    )
+    from harness.settings import ProviderConfig
+
+    az = Config(
+        provider=ProviderConfig(
+            azure_endpoint="https://r.services.ai.azure.com",
+            azure_api_key="k",
+            openrouter_api_key="sk-or-x",
+        )
+    )
+    assert isinstance(detect_provider(az), AzureFoundryProvider)
+    assert provider_label(az) == "Azure AI Foundry"
+
+    orr = Config(provider=ProviderConfig(azure_endpoint="", openrouter_api_key="sk-or-x"))
+    assert isinstance(detect_provider(orr), OpenRouterProvider)
+    assert provider_label(orr) == "OpenRouter"
+
+    none = Config(provider=ProviderConfig(azure_endpoint="", openrouter_api_key=""))
+    assert isinstance(detect_provider(none), FakeProvider)
+    assert provider_label(none) == "FakeProvider (offline)"
+
+
+def test_build_provider_requires_explicit_name():
+    """build_provider(cfg) never sniffs config contents — it's a pure
+    name -> factory lookup and raises if cfg.provider.name is unset."""
+    from harness.llm.provider import (
+        AzureFoundryProvider,
+        FakeProvider,
+        OpenRouterProvider,
+        build_provider,
+    )
+    from harness.settings import ProviderConfig
+
+    try:
+        build_provider(Config())
+    except ValueError as e:
+        assert "cfg.provider.name" in str(e)
+    else:
+        raise AssertionError("expected ValueError when cfg.provider.name is unset")
+
+    assert isinstance(
+        build_provider(Config(provider=ProviderConfig(name="fake"))), FakeProvider
+    )
+    assert isinstance(
+        build_provider(
+            Config(provider=ProviderConfig(name="openrouter", openrouter_api_key="sk-x"))
+        ),
+        OpenRouterProvider,
+    )
+    assert isinstance(
+        build_provider(
+            Config(provider=ProviderConfig(name="azure", azure_endpoint="https://x", azure_api_key="k"))
+        ),
+        AzureFoundryProvider,
+    )
+
+
+def test_azure_complete_api_key_and_params():
+    """AzureFoundryProvider.complete: api-key header auth, api-version query
+    param, /openai/v1 base, and OpenAI-shaped response parsing."""
+    from harness.llm.provider import AzureFoundryProvider
+    from harness.settings import ProviderConfig
+
+    captured: dict = {}
+
+    class StubResp:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {
+                "choices": [{"message": {"role": "assistant", "content": "hi there"}}],
+                "usage": {"prompt_tokens": 5, "completion_tokens": 2},
+            }
+
+    class StubClient:
+        def __init__(self, headers):
+            captured["headers"] = headers
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def post(self, url, json, params):
+            captured["url"] = url
+            captured["params"] = params
+            captured["payload"] = json
+            return StubResp()
+
+    cfg = ProviderConfig(
+        azure_endpoint="https://r.services.ai.azure.com/",
+        azure_api_key="secret-key",
+        azure_api_version="preview",
+    )
+    prov = AzureFoundryProvider(cfg)
+    # verify the client is built with api-key auth + /openai/v1 base
+    prov._client = lambda: StubClient(prov._auth_headers())
+
+    res = prov.complete(
+        "my-deployment", [{"role": "user", "content": "hi"}], tools=[{"type": "function"}]
+    )
+
+    assert captured["headers"] == {"api-key": "secret-key"}
+    assert captured["url"] == "/chat/completions"
+    assert captured["params"] == {"api-version": "preview"}
+    assert captured["payload"]["model"] == "my-deployment"
+    assert captured["payload"]["tool_choice"] == "auto"
+    assert res.text == "hi there"
+    assert res.tokens_in == 5 and res.tokens_out == 2
+
+
+def test_azure_stream_reuses_openai_base():
+    """AzureFoundryProvider inherits the OpenAI-compatible SSE assembly:
+    split content + fragmented tool_call arguments merge into one ModelResult,
+    and api-version params are forwarded to the streaming request."""
+    import json as _json
+
+    from harness.llm.provider import AzureFoundryProvider
+    from harness.settings import ProviderConfig
+
+    chunks = [
+        {"choices": [{"delta": {"content": "Hel"}}]},
+        {"choices": [{"delta": {"content": "lo"}}]},
+        {
+            "choices": [
+                {
+                    "delta": {
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "id": "call_1",
+                                "type": "function",
+                                "function": {"name": "Bash", "arguments": '{"comm'},
+                            }
+                        ]
+                    }
+                }
+            ]
+        },
+        {
+            "choices": [
+                {"delta": {"tool_calls": [{"index": 0, "function": {"arguments": 'and": "ls"}'}}]}}
+            ]
+        },
+        {"choices": [{"delta": {}}], "usage": {"prompt_tokens": 11, "completion_tokens": 7}},
+    ]
+    lines = [f"data: {_json.dumps(c)}" for c in chunks] + ["data: [DONE]"]
+    captured: dict = {}
+
+    class StubStreamResp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def raise_for_status(self):
+            pass
+
+        def iter_lines(self):
+            return iter(lines)
+
+    class StubClient:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def stream(self, method, url, json, params):
+            captured["params"] = params
+            assert json["stream"] is True
+            return StubStreamResp()
+
+    cfg = ProviderConfig(
+        azure_endpoint="https://r.services.ai.azure.com",
+        azure_api_key="k",
+        azure_api_version="2024-10-21",
+    )
+    prov = AzureFoundryProvider(cfg)
+    prov._client = lambda: StubClient()
+    deltas, res = _drain(
+        prov.stream("m", [{"role": "user", "content": "hi"}], tools=[{"type": "function"}])
+    )
+    assert "".join(deltas) == "Hello"
+    assert res.text == "Hello"
+    assert len(res.tool_calls) == 1
+    tc = res.tool_calls[0]
+    assert tc["id"] == "call_1" and tc["function"]["name"] == "Bash"
+    assert tc["function"]["arguments"] == '{"command": "ls"}'
+    assert res.tokens_in == 11 and res.tokens_out == 7
+    assert captured["params"] == {"api-version": "2024-10-21"}
+
+
 if __name__ == "__main__":
     import traceback
+
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     failed = 0
     for fn in fns:

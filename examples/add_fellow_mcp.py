@@ -8,15 +8,21 @@ cached under ~/.harness/mcp-auth so later runs are non-interactive. If you have
 a static bearer token instead, drop the `oauth=True` and pass headers=
 {"Authorization": f"Bearer {token}"}.
 """
+
 from __future__ import annotations
 
-from harness.app import Harness
+from harness.core import Harness
+from harness.llm.provider import detect_provider
+from harness.persistence.repository import build_repository
+from harness.settings import Config
 
 FELLOW_URL = "https://fellow.app/mcp"
 
 
 def main() -> None:
-    h = Harness()  # reads .env (Postgres if DATABASE_URL is set, else in-memory)
+    # This app opts into env-reading explicitly; Harness itself never does.
+    cfg = Config.from_env()
+    h = Harness(cfg, provider=detect_provider(cfg), repo=build_repository(cfg))
 
     # one line: connect over HTTP with interactive OAuth, index tools, enable dispatch
     client = h.add_mcp_http(FELLOW_URL, name="fellow", oauth=True)

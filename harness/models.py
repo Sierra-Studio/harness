@@ -1,9 +1,10 @@
 """Dataclasses mirroring the Postgres schema."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Optional
+from typing import Any
 
 
 @dataclass
@@ -24,6 +25,19 @@ class Session:
 
 
 @dataclass
+class SessionSummary:
+    """A row in the `/sessions` list — enough to recognize and pick a session
+    to resume, without loading its full history."""
+
+    id: str
+    subject: str  # latest checkpoint label, else a snippet of the first message
+    status: str
+    tokens_spent: int
+    turns: int
+    started_at: datetime | None = None
+
+
+@dataclass
 class Turn:
     id: str
     session_id: str
@@ -32,17 +46,17 @@ class Turn:
     role: str  # user | system | assistant | tool
     content: Any
     token_count: int
-    tokens_in: Optional[int] = None
-    tokens_out: Optional[int] = None
+    tokens_in: int | None = None
+    tokens_out: int | None = None
     in_window: bool = True
-    created_at: Optional[datetime] = None
+    created_at: datetime | None = None
 
 
 @dataclass
 class Summary:
     id: str
     session_id: str
-    parent_id: Optional[str]
+    parent_id: str | None
     content: str
     token_count: int
     covers_until: int

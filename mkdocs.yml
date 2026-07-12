@@ -1,0 +1,86 @@
+site_name: Harness
+site_description: A pluggable, multi-tenant LLM agent harness (Memory, Skills, MCP, Tools, Loop) over OpenRouter/Azure + Postgres.
+
+theme:
+  name: material
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/weather-night
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to light mode
+  features:
+    - navigation.instant
+    - navigation.tracking
+    - navigation.tabs
+    - navigation.top
+    - content.code.copy
+    - search.suggest
+
+plugins:
+  - search
+  - mkdocstrings:
+      handlers:
+        python:
+          options:
+            show_source: true
+            show_root_heading: true
+            docstring_style: google
+            merge_init_into_class: true
+            show_signature_annotations: true
+
+markdown_extensions:
+  - admonition
+  - pymdownx.details
+  - pymdownx.superfences
+  - pymdownx.highlight
+  - pymdownx.inlinehilite
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.snippets:
+      base_path: ["."]
+      check_paths: true
+  - tables
+  - toc:
+      permalink: true
+
+nav:
+  - Home: index.md
+  - Quickstart: quickstart.md
+  - Configuration: configuration.md
+  - Concepts:
+      - Loop & Memory: concepts/loop-and-memory.md
+      - Persona: concepts/persona.md
+      - Tools & Providers: concepts/tools-and-providers.md
+      - MCP: concepts/mcp.md
+      - Skills: concepts/skills.md
+      - Providers (LLM): concepts/llm-providers.md
+      - Observability: concepts/observability.md
+      - Sandbox: concepts/sandbox.md
+  - Deployment:
+      - CLI: deployment/cli.md
+      - HTTP server: deployment/http-server.md
+      - Stateless mode: deployment/stateless.md
+  - Testing: testing.md
+  - API Reference:
+      - core: reference/core.md
+      - settings: reference/settings.md
+      - memory: reference/memory.md
+      - llm: reference/llm.md
+      - tools: reference/tools.md
+      - mcp: reference/mcp.md
+      - persistence: reference/persistence.md
+      - observability: reference/observability.md
+  - Architecture Decisions:
+      - Overview: adr/index.md
+      - "ADR 0001: MCP exposure & lifecycle": adr/0001-mcp-exposure-and-runtime-lifecycle.md
+  - Changelog: changelog.md
