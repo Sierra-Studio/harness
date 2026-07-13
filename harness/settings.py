@@ -14,6 +14,7 @@ from __future__ import annotations
 import os
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from typing import Literal
 
 
 def _int(env: Mapping[str, str], name: str, default: int) -> int:
@@ -52,6 +53,14 @@ class ProviderConfig:
     azure_api_key: str = ""  # empty => Entra ID / managed identity
     azure_api_version: str = "preview"
     azure_client_id: str = ""  # user-assigned managed identity
+    # Google Vertex AI (OpenAI-compatible endpoint). Auth = Application Default
+    # Credentials (service-account key file via GOOGLE_APPLICATION_CREDENTIALS,
+    # gcloud ADC, or workload identity) — no secret stored in config.
+    vertex_project: str = ""
+    vertex_location: str = "us-central1"
+    # AWS Bedrock (Converse API). Auth = the standard boto3 credential chain
+    # (env vars, shared config, IAM role) — no secret stored in config.
+    bedrock_region: str = ""
     default_context_window: int = 128_000  # fallback when the provider can't report one
 
     @classmethod
@@ -68,6 +77,13 @@ class ProviderConfig:
             azure_api_version=e.get("AZURE_AI_API_VERSION", cls.azure_api_version).strip()
             or cls.azure_api_version,
             azure_client_id=e.get("AZURE_CLIENT_ID", "").strip(),
+            vertex_project=e.get("GCP_VERTEX_PROJECT", "").strip(),
+            vertex_location=e.get("GCP_VERTEX_LOCATION", cls.vertex_location).strip()
+            or cls.vertex_location,
+            # Explicit opt-in only: AWS_REGION is ubiquitous on AWS and must NOT
+            # auto-select Bedrock. When unset, boto3 still reads AWS_REGION for
+            # the client's region on its own (region_name=None).
+            bedrock_region=e.get("AWS_BEDROCK_REGION", "").strip(),
             default_context_window=_int(e, "DEFAULT_CONTEXT_WINDOW", cls.default_context_window),
         )
 
@@ -125,7 +141,7 @@ class MemoryConfig:
                 e, "SKILLS_IN_PROMPT_LIMIT", cls.skills_in_prompt_limit
             ),
             summary_keep_ratio=_float(e, "SUMMARY_KEEP_RATIO", cls.summary_keep_ratio),
-            persona_path=e.get("HARNESS_PERSONA_PATH", e.get("HARNESS_SOUL_PATH", "")).strip(),
+            persona_path=e.get("HARNESS_PERSONA_PATH", "").strip(),
         )
 
 
@@ -143,6 +159,25 @@ class BashConfig:
         )
 
 
+PermissionMode = Literal["auto", "manual"]
+
+
+@dataclass(frozen=True)
+class PermissionConfig:
+    # "auto" => every tool call runs unprompted; "manual" => ask before each
+    # side-effecting call (see harness.core.permissions.Permissions).
+    mode: PermissionMode = "auto"
+
+    @classmethod
+    def from_env(cls, env: Mapping[str, str] | None = None) -> PermissionConfig:
+        e = env if env is not None else os.environ
+        raw = e.get("HARNESS_PERMISSION_MODE", cls.mode).strip().lower()
+        if raw == "auto":
+            return cls(mode="auto")
+        if raw == "manual":
+            return cls(mode="manual")
+        return cls(mode=cls.mode)
+
 @dataclass(frozen=True)
 class Config:
     database_url: str = ""  # empty => in-memory repository (via build_repository helper)
@@ -150,6 +185,7 @@ class Config:
     loop: LoopConfig = field(default_factory=LoopConfig)
     memory: MemoryConfig = field(default_factory=MemoryConfig)
     bash: BashConfig = field(default_factory=BashConfig)
+    permissions: PermissionConfig = field(default_factory=PermissionConfig)
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> Config:
@@ -163,6 +199,7 @@ class Config:
             loop=LoopConfig.from_env(e),
             memory=MemoryConfig.from_env(e),
             bash=BashConfig.from_env(e),
+            permissions=PermissionConfig.from_env(e),
         )
 
 
@@ -195,6 +232,7 @@ __all__ = [
     "Config",
     "LoopConfig",
     "MemoryConfig",
+    "PermissionConfig",
     "ProviderConfig",
     "mcp_http_servers",
 ]

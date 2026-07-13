@@ -16,6 +16,7 @@ from ..observability import Observer
 from ..persistence import Repository
 from ..settings import Config
 from ..tools import ToolRegistry
+from .permissions import Permissions
 
 
 @dataclass
@@ -82,6 +83,7 @@ class AgentLoop:
         system_prompt: str,
         skills: Skills,
         hooks: list[Hook] | None = None,
+        permissions: Permissions | None = None,
     ):
         self.cfg = cfg
         self.repo = repo
@@ -92,6 +94,7 @@ class AgentLoop:
         self.system_prompt = system_prompt
         self.skills = skills
         self.hooks = list(hooks or ())
+        self.permissions = permissions or Permissions()
 
     # ---- hook fan-out (a raising hook never kills the turn) ----
     def _fire_turn_hook(self, method: str, session: Session, payload: Any) -> None:
@@ -150,6 +153,61 @@ class AgentLoop:
         self.memory.append(session, "user", user_message)
         self.memory.maybe_checkpoint(session)
         self._fire_turn_hook("before_turn", session, user_message)
+        yield from self._run_steps(session)
+
+    def resume_turn_stream(
+        self, session: Session, approved_call: dict
+    ) -> Iterator[LoopEvent]:
+        """Continue a turn that suspended on the permission gate.
+
+        `approved_call` is the exact call captured at suspension
+        (``{"name", "args", "call_id"}`` plus optional ``"denied"``): it is run
+        verbatim (or recorded as denied) and its result appended, then the normal
+        step loop resumes. Because the pending tool call was already recorded in
+        memory before the suspension, the model is never asked to re-emit it —
+        the continuation is deterministic, not a replay.
+        """
+        session = self.repo.get_session(session.id)
+        name = approved_call["name"]
+        args = approved_call.get("args") or {}
+        call_id = approved_call["call_id"]
+        # No `tool_start` here: the call was already announced (and observed) on
+        # the turn that suspended; only its result is new. Emitting it again would
+        # duplicate the call in any consumer that accumulates tool traces.
+        if approved_call.get("denied"):
+            content = f"Tool call '{name}' was denied by the user."
+            self.memory.append(session, "tool", {"tool_call_id": call_id, "content": content})
+            yield LoopEvent("tool_result", name=name, call_id=call_id, content=content)
+        else:
+            out_name, out_id, content = self._dispatch_and_record(session, name, args, call_id)
+            yield LoopEvent("tool_result", name=out_name, call_id=out_id, content=content)
+        yield from self._run_steps(session)
+
+    def _dispatch_and_record(
+        self,
+        session: Session,
+        name: str,
+        args: dict,
+        call_id: str,
+        assistant_turn_id: str | None = None,
+    ) -> tuple[str, str, str]:
+        """Run one tool call, apply after_tool hooks, append the result to
+        memory, and return (name, call_id, content). Shared by the step loop
+        (a live turn) and resume_turn_stream (a resumed one)."""
+        out = self.tools.dispatch(
+            session, {"id": call_id, "function": {"name": name, "arguments": args}}
+        )
+        content = self._fire_after_tool(session, name, out["content"])
+        self.memory.append(
+            session, "tool", {"tool_call_id": out["tool_call_id"], "content": content}
+        )
+        self.observer.log(session.id, assistant_turn_id, "tool_call", {"name": out["name"]})
+        return out["name"], out["tool_call_id"], content
+
+    def _run_steps(self, session: Session) -> Iterator[LoopEvent]:
+        """The perceive -> model -> tools step loop shared by a fresh turn
+        (run_turn_stream) and a resumed one (resume_turn_stream)."""
+        session = self.repo.get_session(session.id)
 
         # Prompt layers, ordered for cache friendliness:
         #   [ global system prompt ]  <- identical across users; cacheable prefix
@@ -245,22 +303,18 @@ class AgentLoop:
                 # before_tool hooks may transform the args; dispatch the effective call.
                 args = self._fire_before_tool(session, name, args)
                 yield LoopEvent("tool_start", name=name, args=args, call_id=call_id)
-                out = self.tools.dispatch(
-                    session, {"id": call_id, "function": {"name": name, "arguments": args}}
+                # Permission gate ("manual mode"): a denied call never runs; the
+                # model gets a tool result saying so, so it can adjust or stop.
+                if not self.permissions.check(name, args):
+                    denied = f"Tool call '{name}' was denied by the user."
+                    self.memory.append(session, "tool", {"tool_call_id": call_id, "content": denied})
+                    self.observer.log(session.id, assistant_turn.id, "tool_denied", {"name": name})
+                    yield LoopEvent("tool_result", name=name, call_id=call_id, content=denied)
+                    continue
+                out_name, out_id, content = self._dispatch_and_record(
+                    session, name, args, call_id, assistant_turn.id
                 )
-                content = self._fire_after_tool(session, name, out["content"])
-                self.memory.append(
-                    session,
-                    "tool",
-                    {"tool_call_id": out["tool_call_id"], "content": content},
-                )
-                self.observer.log(session.id, assistant_turn.id, "tool_call", {"name": out["name"]})
-                yield LoopEvent(
-                    "tool_result",
-                    name=out["name"],
-                    call_id=out["tool_call_id"],
-                    content=content,
-                )
+                yield LoopEvent("tool_result", name=out_name, call_id=out_id, content=content)
 
         result = TurnResult(
             final_text or "(max steps reached)",

@@ -78,6 +78,65 @@ def test_optional_provider_failure_degrades():
     assert "alpha" in _names(h)
 
 
+class _FakeResp:
+    def __init__(self, status, body, ok=False):
+        self.is_success = ok
+        self.status_code = status
+        self._body = body
+
+        class _Req:
+            url = "https://x/openai/v1/chat/completions"
+
+        self.request = _Req()
+
+    def read(self):  # streamed responses must be read before .json()
+        pass
+
+    def json(self):
+        if self._body is None:
+            raise ValueError("no body")
+        return self._body
+
+
+def test_check_surfaces_content_filter_reason():
+    from harness.llm.provider import OpenAICompatibleProvider as P
+
+    body = {
+        "error": {
+            "code": "content_filter",
+            "message": "blocked",
+            "innererror": {
+                "content_filter_result": {
+                    "violence": {"filtered": True, "severity": "medium"},
+                    "hate": {"filtered": False},
+                }
+            },
+        }
+    }
+    try:
+        P._check(_FakeResp(400, body))
+        raise AssertionError("expected RuntimeError")
+    except RuntimeError as e:
+        assert "content filter" in str(e).lower() and "violence" in str(e)
+        assert "rephrase" in str(e).lower()
+
+
+def test_check_surfaces_generic_message_and_bare_status():
+    from harness.llm.provider import OpenAICompatibleProvider as P
+
+    try:
+        P._check(_FakeResp(400, {"error": {"message": "bad api-version"}}))
+        raise AssertionError("expected RuntimeError")
+    except RuntimeError as e:
+        assert "bad api-version" in str(e)
+    try:
+        P._check(_FakeResp(500, None))
+        raise AssertionError("expected RuntimeError")
+    except RuntimeError as e:
+        assert "500" in str(e)
+    P._check(_FakeResp(200, {}, ok=True))  # success does not raise
+
+
 def test_close_stops_providers():
     stopped = []
 

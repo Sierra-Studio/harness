@@ -37,19 +37,57 @@ class SandboxBackend(abc.ABC):
     @abc.abstractmethod
     def destroy(self, session_id: str) -> None: ...
 
+    # File I/O for the Write/Edit tools. Relative paths resolve against the same
+    # persisted working directory `exec` uses, so all three tools see one view of
+    # the filesystem. Backends that can't expose a filesystem leave these as-is
+    # (the tools surface the NotImplementedError message to the model).
+    def read_file(self, session_id: str, path: str) -> str:
+        raise NotImplementedError("this sandbox backend does not support file reads")
+
+    def write_file(self, session_id: str, path: str, content: str) -> str:
+        """Write text (creating parent dirs). Returns the absolute path written."""
+        raise NotImplementedError("this sandbox backend does not support file writes")
+
 
 class LocalSubprocessSandbox(SandboxBackend):
-    def __init__(self, max_output: int = 10_000):
-        self._dirs: dict[str, str] = {}  # session_id -> root tempdir
+    def __init__(self, max_output: int = 10_000, workspace: str | None = None):
+        """`workspace`: a real directory every session starts in (e.g. the repo
+        you launched from) so the agent can read/edit your actual project, like
+        Claude Code. It is SHARED across sessions and NEVER deleted by
+        `destroy()`. When None, each session gets a private throwaway tempdir
+        that IS deleted on `destroy()` (the isolated default)."""
+        self._dirs: dict[str, str] = {}  # session_id -> root dir
         self._cwd: dict[str, str] = {}  # session_id -> current working dir (persisted)
+        self._owned: set[str] = set()  # roots we created and may safely rmtree
         self.max_output = max_output
+        self.workspace = workspace
 
     def _root(self, session_id: str) -> str:
         if session_id not in self._dirs:
-            root = tempfile.mkdtemp(prefix=f"hsbx-{session_id[:8]}-")
+            if self.workspace:
+                root = self.workspace  # shared, external: never deleted
+            else:
+                root = tempfile.mkdtemp(prefix=f"hsbx-{session_id[:8]}-")
+                self._owned.add(root)  # private, throwaway: safe to delete
             self._dirs[session_id] = root
             self._cwd[session_id] = root
         return self._dirs[session_id]
+
+    def _resolve(self, session_id: str, path: str) -> Path:
+        """Resolve a possibly-relative path against the session's current cwd —
+        the same directory `exec` runs in — so Bash/Write/Edit stay in sync."""
+        self._root(session_id)
+        p = Path(path).expanduser()
+        return p if p.is_absolute() else Path(self._cwd[session_id]) / p
+
+    def read_file(self, session_id: str, path: str) -> str:
+        return self._resolve(session_id, path).read_text()
+
+    def write_file(self, session_id: str, path: str, content: str) -> str:
+        dest = self._resolve(session_id, path)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_text(content)
+        return str(dest)
 
     def exec(self, session_id, command, timeout=60) -> ExecResult:
         self._root(session_id)
@@ -113,5 +151,7 @@ class LocalSubprocessSandbox(SandboxBackend):
     def destroy(self, session_id) -> None:
         root = self._dirs.pop(session_id, None)
         self._cwd.pop(session_id, None)
-        if root:
+        # Only delete dirs WE created — never an external workspace (your repo).
+        if root and root in self._owned and root not in self._dirs.values():
             shutil.rmtree(root, ignore_errors=True)
+            self._owned.discard(root)

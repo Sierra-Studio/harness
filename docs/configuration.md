@@ -69,7 +69,7 @@ Managed identity (no stored secret) needs the `azure` extra: `pip install 'harne
 | `SKILL_INDUCTION_EVERY_SESSIONS` | `10` |
 | `SKILLS_IN_PROMPT_LIMIT` | `30` |
 | `SUMMARY_KEEP_RATIO` | `0.10` |
-| `HARNESS_PERSONA_PATH` | `""` — empty ⇒ look for `./PERSONA.md`, else default identity (`HARNESS_SOUL_PATH` also read, deprecated) |
+| `HARNESS_PERSONA_PATH` | `""` — empty ⇒ look for `./PERSONA.md`, else default identity |
 
 ### Bash tool
 

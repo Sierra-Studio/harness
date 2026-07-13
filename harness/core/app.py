@@ -20,6 +20,7 @@ from ..tools import (
     ToolRegistry,
 )
 from .loop import AgentLoop, Hook, LoopEvent, TurnResult
+from .permissions import Permissions
 
 
 class Harness:
@@ -38,6 +39,7 @@ class Harness:
         hooks: list[Hook] | None = None,
         skills: Skills | None = None,
         tracer: Tracer | None = None,
+        permissions: Permissions | None = None,
     ):
         """Wire a harness from a Config, overriding any component.
 
@@ -109,6 +111,9 @@ class Harness:
             tools=tools,
             on_provider_error=self._on_provider_error,
         )
+        # Permission gate: manual mode asks before each side-effecting tool call.
+        # Interfaces (TUI/CLI) install an `asker` and can flip the mode at runtime.
+        self.permissions = permissions or Permissions(mode=self.cfg.permissions.mode)
         self.memory = Memory(self.repo, self.provider, self.cfg, self.observer)
         # System prompt: explicit override wins; otherwise assemble the layered
         # persona (PERSONA.md / default identity) plus guidance composed from
@@ -126,6 +131,7 @@ class Harness:
             prompt,
             self.skills,
             hooks=hooks,
+            permissions=self.permissions,
         )
 
     def _on_provider_error(self, provider: ToolProvider, error: Exception) -> None:
@@ -225,6 +231,57 @@ class Harness:
             if role in ("user", "assistant") and content:
                 self.loop.memory.append(session, role, content)
         yield from self.run_turn_stream(session, message)
+
+    def _seed_message(self, session, msg: dict) -> None:
+        """Append one caller-supplied message to a stateless session, preserving
+        tool-call structure so a suspended turn can be rebuilt faithfully.
+
+        Unlike the plain user/assistant-text seeding in run_stateless_stream,
+        this keeps assistant messages that carry `tool_calls` (stored verbatim,
+        the same shape the loop records) and `tool` result messages, so
+        build_window round-trips them back to the model on resume. `system`
+        messages are dropped — the harness prepends its own.
+        """
+        role = msg.get("role")
+        if role == "user":
+            content = msg.get("content")
+            if content:
+                self.loop.memory.append(session, "user", content)
+        elif role == "assistant":
+            self.loop.memory.append(session, "assistant", msg)
+        elif role == "tool":
+            self.loop.memory.append(
+                session,
+                "tool",
+                {"tool_call_id": msg.get("tool_call_id"), "content": msg.get("content", "")},
+            )
+
+    def resume_stateless_stream(
+        self,
+        seed_messages: list[dict],
+        approved_call: dict,
+        *,
+        external_id: str = "stateless",
+        model: str = "",
+    ) -> Iterator[LoopEvent]:
+        """Resume a turn that suspended on the permission gate, with no persistence.
+
+        `seed_messages` is the caller-owned window captured at suspension (system
+        excluded) — including the assistant message whose tool call is pending.
+        `approved_call` is the exact call to run (or a denial). The seeded window
+        is rebuilt, the approved call executed verbatim, and the step loop
+        continues — deterministically, without re-invoking the model to reproduce
+        the tool call. Requires an ephemeral repo, like run_stateless_stream.
+        """
+        if not isinstance(self.repo, InMemoryRepository):
+            raise RuntimeError(
+                "resume_stateless_stream requires repo=InMemoryRepository() to have been "
+                "passed explicitly when constructing this Harness."
+            )
+        session = self.start_session(external_id, model=model)
+        for msg in seed_messages:
+            self._seed_message(session, msg)
+        yield from self.loop.resume_turn_stream(session, approved_call)
 
     def run_stateless(self, history: list[dict], message: Any, **kwargs: Any) -> TurnResult:
         """Collects the final TurnResult, mirroring run_turn/run_turn_stream."""

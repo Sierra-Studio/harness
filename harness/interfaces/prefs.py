@@ -31,6 +31,7 @@ DEFAULTS: dict[str, Any] = {
     "model": "",
     "token_budget": None,
     "response_reserve_tokens": None,
+    "permission_mode": "",  # "auto" | "manual" ("" = built-in / env default)
 }
 
 
@@ -70,13 +71,15 @@ def apply_defaults(cfg: Any, *, from_dotenv: set[str] = frozenset()) -> Any:
         return bool(os.environ.get(name)) and name not in from_dotenv
 
     p = load()
-    provider, loop = cfg.provider, cfg.loop
+    provider, loop, perms = cfg.provider, cfg.loop, cfg.permissions
     if p["model"] and not real_env("HARNESS_MODEL"):
         provider = dataclasses.replace(provider, model=p["model"])
     if p["token_budget"] is not None and not real_env("TOKEN_BUDGET_PER_SESSION"):
         loop = dataclasses.replace(loop, token_budget_per_session=p["token_budget"])
     if p["response_reserve_tokens"] is not None and not real_env("RESPONSE_RESERVE_TOKENS"):
         loop = dataclasses.replace(loop, response_reserve_tokens=p["response_reserve_tokens"])
-    if provider is cfg.provider and loop is cfg.loop:
+    if p["permission_mode"] and not real_env("HARNESS_PERMISSION_MODE"):
+        perms = dataclasses.replace(perms, mode=p["permission_mode"])
+    if provider is cfg.provider and loop is cfg.loop and perms is cfg.permissions:
         return cfg
-    return dataclasses.replace(cfg, provider=provider, loop=loop)
+    return dataclasses.replace(cfg, provider=provider, loop=loop, permissions=perms)

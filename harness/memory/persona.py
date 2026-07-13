@@ -13,15 +13,12 @@ snippet and `compose_tool_guidance` assembles only the active ones, so the promp
 never mentions a tool that isn't present.
 
 PERSONA.md is loaded fresh; delete it (or its content) to fall back to the
-default persona. Comment-only files (HTML comments) count as empty. SOUL.md is
-still read as a deprecated fallback filename for one release (logged as a
-deprecation warning) if no PERSONA.md is found.
+default persona. Comment-only files (HTML comments) count as empty.
 """
 
 from __future__ import annotations
 
 import re
-import warnings
 from datetime import date as _date
 from pathlib import Path
 
@@ -74,9 +71,8 @@ def load_persona(persona_path: str = "", *, explicit: str = "") -> str:
     """Resolve the persona/identity text.
 
     Precedence: explicit string > PERSONA.md at persona_path > PERSONA.md in
-    CWD > SOUL.md at persona_path (deprecated) > SOUL.md in CWD (deprecated) >
-    DEFAULT_IDENTITY. A comment-only or empty file falls through to the next
-    candidate.
+    CWD > DEFAULT_IDENTITY. A comment-only or empty file falls through to the
+    next candidate.
     """
     if _meaningful(explicit):
         return _meaningful(explicit)
@@ -91,26 +87,6 @@ def load_persona(persona_path: str = "", *, explicit: str = "") -> str:
             if path.is_file():
                 content = _meaningful(path.read_text(encoding="utf-8"))
                 if content:
-                    return content
-        except OSError:
-            continue
-
-    # Deprecated fallback filename — dropped in a future release.
-    deprecated = []
-    if persona_path:
-        deprecated.append(Path(persona_path).with_name("SOUL.md"))
-    deprecated.append(Path.cwd() / "SOUL.md")
-    for path in deprecated:
-        try:
-            if path.is_file():
-                content = _meaningful(path.read_text(encoding="utf-8"))
-                if content:
-                    warnings.warn(
-                        f"{path} uses the deprecated SOUL.md filename; rename it to "
-                        "PERSONA.md (SOUL.md support will be removed in a future release).",
-                        DeprecationWarning,
-                        stacklevel=2,
-                    )
                     return content
         except OSError:
             continue

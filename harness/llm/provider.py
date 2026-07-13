@@ -43,6 +43,12 @@ class Provider(abc.ABC):
         self, model: str, messages: list[dict], tools: list[dict] | None = None
     ) -> ModelResult: ...
 
+    def available_models(self) -> list[str] | None:
+        """Model ids this provider can enumerate for validation, or ``None``
+        when it can't verify (callers must then accept any id rather than
+        reject a real model they simply couldn't confirm)."""
+        return None
+
     def stream(
         self, model: str, messages: list[dict], tools: list[dict] | None = None
     ) -> Generator[str, None, ModelResult]:
@@ -165,6 +171,37 @@ class OpenAICompatibleProvider(Provider):
         """Extra query params sent with each request (e.g. api-version)."""
         return {}
 
+    @staticmethod
+    def _check(r: Any) -> None:
+        """Raise a helpful error on a non-2xx response, surfacing the API's own
+        message instead of a bare status line. Reads the body first so it also
+        works for a streamed response. Names Azure content-filter blocks (a 400
+        that otherwise looks like a mysterious bug) and which category tripped."""
+        if r.is_success:
+            return
+        try:
+            r.read()  # streamed responses must be read before .json()
+            detail = r.json()
+        except Exception:
+            detail = None
+        err = detail.get("error") if isinstance(detail, dict) else None
+        if isinstance(err, dict):
+            if err.get("code") == "content_filter":
+                inner = err.get("innererror") or {}
+                results = inner.get("content_filter_result") or {}
+                cats = ", ".join(
+                    k for k, v in results.items() if isinstance(v, dict) and v.get("filtered")
+                )
+                where = f" ({cats})" if cats else ""
+                raise RuntimeError(
+                    f"Request blocked by the provider's content filter{where}. "
+                    "This is a safety filter on the prompt text, not a code error — "
+                    "rephrase the wording and retry."
+                )
+            if err.get("message"):
+                raise RuntimeError(f"{r.status_code} from {r.request.url}: {err['message']}")
+        raise RuntimeError(f"{r.status_code} from {r.request.url}")
+
     def complete(self, model, messages, tools=None) -> ModelResult:
         payload: dict = {"model": model, "messages": messages}
         if tools:
@@ -172,7 +209,7 @@ class OpenAICompatibleProvider(Provider):
             payload["tool_choice"] = "auto"
         with self._client() as c:
             r = c.post("/chat/completions", json=payload, params=self._params())
-            r.raise_for_status()
+            self._check(r)
             d = r.json()
         msg = d["choices"][0]["message"]
         usage = d.get("usage", {})
@@ -197,7 +234,7 @@ class OpenAICompatibleProvider(Provider):
         tokens_in = tokens_out = 0
         with self._client() as c:
             with c.stream("POST", "/chat/completions", json=payload, params=self._params()) as r:
-                r.raise_for_status()
+                self._check(r)
                 for raw in r.iter_lines():
                     line = raw.strip()
                     if not line.startswith("data:"):
@@ -285,6 +322,13 @@ class OpenRouterProvider(OpenAICompatibleProvider):
         except Exception:
             return self.cfg.default_context_window
 
+    def available_models(self) -> list[str] | None:
+        try:
+            self._load_models()
+            return list(self._models)
+        except Exception:
+            return None  # network/registry failure: can't verify, don't reject
+
 
 # ---------------------------------------------------------------------------
 @register_provider("azure")
@@ -350,6 +394,309 @@ class AzureFoundryProvider(OpenAICompatibleProvider):
         # Azure AI Foundry has no OpenRouter-style /models context_length
         # endpoint; report the configured fallback.
         return self.cfg.default_context_window
+
+
+# ---------------------------------------------------------------------------
+@register_provider("vertex")
+class VertexProvider(OpenAICompatibleProvider):
+    """Google Vertex AI via its OpenAI-compatible chat-completions endpoint.
+
+    Because the wire format is OpenAI-compatible, all request/response and
+    SSE-streaming logic is inherited from `OpenAICompatibleProvider`; only the
+    transport (base URL + a short-lived OAuth bearer) differs.
+
+    Auth uses Application Default Credentials (`google-auth`): a service-account
+    key file (`GOOGLE_APPLICATION_CREDENTIALS`), `gcloud auth application-default
+    login`, or workload identity. Tokens are fetched at runtime and refreshed in
+    memory — nothing is written to disk, so this is safe in an ephemeral
+    container. Model ids look like `google/gemini-2.0-flash`.
+    """
+
+    def __init__(self, cfg: ProviderConfig):
+        self.cfg = cfg
+        self._credentials = None  # lazily built google.auth credentials
+
+    def _bearer(self) -> str:
+        creds = self._credentials
+        if creds is None:
+            try:
+                import google.auth
+                from google.auth.transport.requests import Request  # noqa: F401
+            except ImportError as e:  # pragma: no cover - env-dependent
+                raise RuntimeError(
+                    "Vertex AI needs Application Default Credentials: install the "
+                    "'vertex' extra (pip install 'harness[vertex]' / google-auth)."
+                ) from e
+            creds, _ = google.auth.default(
+                scopes=["https://www.googleapis.com/auth/cloud-platform"]
+            )
+            self._credentials = creds
+        if not creds.valid:
+            from google.auth.transport.requests import Request
+
+            creds.refresh(Request())
+        return creds.token
+
+    def _client(self):
+        import httpx  # optional dependency
+
+        loc, proj = self.cfg.vertex_location, self.cfg.vertex_project
+        base = (
+            f"https://{loc}-aiplatform.googleapis.com/v1/projects/{proj}"
+            f"/locations/{loc}/endpoints/openapi"
+        )
+        return httpx.Client(
+            base_url=base,
+            headers={"Authorization": f"Bearer {self._bearer()}"},
+            timeout=120,
+        )
+
+    def model_context_window(self, model: str) -> int:
+        # The Vertex OpenAI-compat endpoint exposes no models listing; report
+        # the configured fallback.
+        return self.cfg.default_context_window
+
+
+# ---------------------------------------------------------------------------
+@register_provider("bedrock")
+class BedrockProvider(Provider):
+    """AWS Bedrock via the unified **Converse** API (`boto3`).
+
+    Bedrock is NOT OpenAI-wire-compatible, so this subclasses `Provider`
+    directly and translates between the harness's OpenAI-shaped messages/tools
+    and Bedrock's Converse schema (both directions, streaming and not).
+
+    Auth is the standard boto3 credential chain (env vars, shared config/profile,
+    or an IAM role) — nothing is stored in config. `model` is a Bedrock model id
+    or inference-profile id, e.g. `anthropic.claude-3-5-sonnet-20241022-v2:0` or
+    `us.anthropic.claude-3-5-sonnet-20241022-v2:0`.
+    """
+
+    def __init__(self, cfg: ProviderConfig):
+        self.cfg = cfg
+        self._runtime = None  # lazily built bedrock-runtime client
+
+    def _client(self):
+        rt = self._runtime
+        if rt is None:
+            try:
+                import boto3  # optional dependency
+            except ImportError as e:  # pragma: no cover - env-dependent
+                raise RuntimeError(
+                    "AWS Bedrock needs boto3: install the 'bedrock' extra "
+                    "(pip install 'harness[bedrock]' / boto3)."
+                ) from e
+            rt = boto3.client("bedrock-runtime", region_name=self.cfg.bedrock_region or None)
+            self._runtime = rt
+        return rt
+
+    # --- OpenAI <-> Converse translation ---------------------------------
+    @staticmethod
+    def _to_converse(messages: list[dict]) -> tuple[list[dict], list[dict]]:
+        """Split OpenAI-shaped messages into Converse (system_blocks, messages).
+
+        Consecutive same-role turns are merged, because Converse requires strict
+        user/assistant alternation and folds tool results into user turns.
+        """
+        system: list[dict] = []
+        conv: list[dict] = []
+
+        def emit(role: str, blocks: list[dict]) -> None:
+            if not blocks:
+                return
+            if conv and conv[-1]["role"] == role:
+                conv[-1]["content"].extend(blocks)
+            else:
+                conv.append({"role": role, "content": list(blocks)})
+
+        for m in messages:
+            role = m.get("role")
+            if role == "system":
+                text = _text(m.get("content"))
+                if text:
+                    system.append({"text": text})
+            elif role == "user":
+                emit("user", [{"text": _text(m.get("content"))}])
+            elif role == "assistant":
+                blocks: list[dict] = []
+                text = _text(m.get("content")) if m.get("content") else ""
+                if text:
+                    blocks.append({"text": text})
+                for tc in m.get("tool_calls") or []:
+                    fn = tc.get("function", {})
+                    blocks.append(
+                        {
+                            "toolUse": {
+                                "toolUseId": tc.get("id", ""),
+                                "name": fn.get("name", ""),
+                                "input": _loads(fn.get("arguments")),
+                            }
+                        }
+                    )
+                emit("assistant", blocks)
+            elif role == "tool":
+                emit(
+                    "user",
+                    [
+                        {
+                            "toolResult": {
+                                "toolUseId": m.get("tool_call_id", ""),
+                                "content": [{"text": _text(m.get("content"))}],
+                            }
+                        }
+                    ],
+                )
+        return system, conv
+
+    @staticmethod
+    def _tool_config(tools: list[dict] | None) -> dict | None:
+        if not tools:
+            return None
+        specs = []
+        for t in tools:
+            fn = t.get("function", t)
+            specs.append(
+                {
+                    "toolSpec": {
+                        "name": fn.get("name", ""),
+                        "description": fn.get("description", ""),
+                        "inputSchema": {
+                            "json": fn.get("parameters") or {"type": "object", "properties": {}}
+                        },
+                    }
+                }
+            )
+        return {"tools": specs}
+
+    def _request(self, model: str, messages: list[dict], tools: list[dict] | None) -> dict:
+        system, conv = self._to_converse(messages)
+        kwargs: dict = {"modelId": model, "messages": conv}
+        if system:
+            kwargs["system"] = system
+        tc = self._tool_config(tools)
+        if tc:
+            kwargs["toolConfig"] = tc
+        return kwargs
+
+    @staticmethod
+    def _assistant_message(content_parts: list[str], tool_calls: list[dict]) -> dict:
+        msg: dict = {"role": "assistant", "content": "".join(content_parts)}
+        if tool_calls:
+            msg["tool_calls"] = tool_calls
+        return msg
+
+    def complete(self, model, messages, tools=None) -> ModelResult:
+        resp = self._client().converse(**self._request(model, messages, tools))
+        out = resp.get("output", {}).get("message", {})
+        content_parts: list[str] = []
+        tool_calls: list[dict] = []
+        for block in out.get("content", []):
+            if "text" in block:
+                content_parts.append(block["text"])
+            elif "toolUse" in block:
+                tu = block["toolUse"]
+                tool_calls.append(
+                    {
+                        "id": tu.get("toolUseId", ""),
+                        "type": "function",
+                        "function": {
+                            "name": tu.get("name", ""),
+                            "arguments": json.dumps(tu.get("input", {})),
+                        },
+                    }
+                )
+        usage = resp.get("usage", {})
+        return ModelResult(
+            message=self._assistant_message(content_parts, tool_calls),
+            tokens_in=usage.get("inputTokens", 0),
+            tokens_out=usage.get("outputTokens", 0),
+        )
+
+    def stream(self, model, messages, tools=None) -> Generator[str, None, ModelResult]:
+        resp = self._client().converse_stream(**self._request(model, messages, tools))
+        content_parts: list[str] = []
+        tools_by_index: dict[int, dict] = {}  # contentBlockIndex -> {id,name,input}
+        tokens_in = tokens_out = 0
+        for event in resp["stream"]:
+            if "contentBlockStart" in event:
+                start = event["contentBlockStart"]
+                tu = (start.get("start") or {}).get("toolUse")
+                if tu:
+                    tools_by_index[start["contentBlockIndex"]] = {
+                        "id": tu.get("toolUseId", ""),
+                        "name": tu.get("name", ""),
+                        "input": "",
+                    }
+            elif "contentBlockDelta" in event:
+                block = event["contentBlockDelta"]
+                delta = block.get("delta", {})
+                if "text" in delta:
+                    content_parts.append(delta["text"])
+                    yield delta["text"]
+                elif "toolUse" in delta:
+                    acc = tools_by_index.setdefault(
+                        block["contentBlockIndex"], {"id": "", "name": "", "input": ""}
+                    )
+                    acc["input"] += delta["toolUse"].get("input", "")
+            elif "metadata" in event:
+                usage = event["metadata"].get("usage", {})
+                tokens_in = usage.get("inputTokens", tokens_in)
+                tokens_out = usage.get("outputTokens", tokens_out)
+        tool_calls = [
+            {
+                "id": tools_by_index[i]["id"],
+                "type": "function",
+                "function": {
+                    "name": tools_by_index[i]["name"],
+                    "arguments": tools_by_index[i]["input"] or "{}",
+                },
+            }
+            for i in sorted(tools_by_index)
+        ]
+        return ModelResult(
+            message=self._assistant_message(content_parts, tool_calls),
+            tokens_in=tokens_in,
+            tokens_out=tokens_out,
+        )
+
+    def model_context_window(self, model: str) -> int:
+        # Bedrock's runtime API doesn't report context windows; use the fallback.
+        return self.cfg.default_context_window
+
+    def available_models(self) -> list[str] | None:
+        # Enumerate base foundation models AND cross-region inference profiles,
+        # since Converse accepts either id. Any failure (permissions, region) ->
+        # None so the caller accepts an unverifiable-but-valid id rather than
+        # falsely rejecting it.
+        import contextlib
+
+        try:
+            import boto3
+
+            ctl = boto3.client("bedrock", region_name=self.cfg.bedrock_region or None)
+            ids = [m["modelId"] for m in ctl.list_foundation_models().get("modelSummaries", [])]
+            with contextlib.suppress(Exception):  # inference profiles optional / may be denied
+                ids += [
+                    p["inferenceProfileId"]
+                    for p in ctl.list_inference_profiles().get("inferenceProfileSummaries", [])
+                ]
+            return ids or None
+        except Exception:
+            return None
+
+
+def _loads(raw: Any) -> dict:
+    """Parse a tool-call arguments JSON string into a dict (Converse wants an
+    object, not a string). Tolerates empty/malformed input."""
+    if isinstance(raw, dict):
+        return raw
+    if not raw:
+        return {}
+    try:
+        val = json.loads(raw)
+        return val if isinstance(val, dict) else {}
+    except (json.JSONDecodeError, TypeError):
+        return {}
 
 
 # ---------------------------------------------------------------------------
@@ -440,24 +787,35 @@ def build_provider(cfg: Config) -> Provider:
 
 def detect_provider(cfg: Config) -> Provider:
     """Convenience, opt-in heuristic for demos/CLIs that don't want to manage
-    `cfg.provider.name`: Azure if `azure_endpoint` is set, else OpenRouter if
-    `openrouter_api_key` is set, else the offline `FakeProvider`.
+    `cfg.provider.name`. Precedence: Azure (`azure_endpoint`) → Vertex
+    (`vertex_project`) → Bedrock (`bedrock_region`) → OpenRouter
+    (`openrouter_api_key`) → offline `FakeProvider`.
 
     This is NOT called by `Harness` or by `build_provider` — it exists purely
     for application code (see `harness/cli.py`) that wants the old "just pick
     something reasonable from what's configured" behavior explicitly.
     """
-    if cfg.provider.azure_endpoint:
-        return AzureFoundryProvider(cfg.provider)
-    if cfg.provider.openrouter_api_key:
-        return OpenRouterProvider(cfg.provider)
-    return FakeProvider(context_window=cfg.provider.default_context_window)
+    p = cfg.provider
+    if p.azure_endpoint:
+        return AzureFoundryProvider(p)
+    if p.vertex_project:
+        return VertexProvider(p)
+    if p.bedrock_region:
+        return BedrockProvider(p)
+    if p.openrouter_api_key:
+        return OpenRouterProvider(p)
+    return FakeProvider(context_window=p.default_context_window)
 
 
 def provider_label(cfg: Config) -> str:
     """Human-readable name of the provider `detect_provider` would select."""
-    if cfg.provider.azure_endpoint:
+    p = cfg.provider
+    if p.azure_endpoint:
         return "Azure AI Foundry"
-    if cfg.provider.openrouter_api_key:
+    if p.vertex_project:
+        return "Google Vertex AI"
+    if p.bedrock_region:
+        return "AWS Bedrock"
+    if p.openrouter_api_key:
         return "OpenRouter"
     return "FakeProvider (offline)"

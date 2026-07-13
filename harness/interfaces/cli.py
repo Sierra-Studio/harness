@@ -41,6 +41,7 @@ from ..core import Harness
 from ..llm import detect_provider, provider_label
 from ..persistence import build_repository
 from ..settings import Config, mcp_http_servers
+from ..tools import LocalSubprocessSandbox
 from . import mcpstore, prefs, ui
 
 _DOTENV_KEYS: set[str] = set()  # keys _load_dotenv introduced (vs. a real shell env var)
@@ -270,9 +271,19 @@ def _run_command(h: Harness, session, external_id: str, line: str, run, last):
         if not args or ui.is_query(args):
             ui.info(f"model: {session.model}  (default: {prefs.load()['model'] or h.cfg.provider.model})")
         else:
-            h.set_session_model(session, args[0])
-            prefs.save(model=args[0])
-            ui.success(f"model set to '{args[0]}' for this session and saved as the default")
+            model = args[0]
+            available = h.provider.available_models()
+            if available is not None and model not in available:
+                import difflib
+
+                near = difflib.get_close_matches(model, available, n=3, cutoff=0.4)
+                near += [m for m in available if model.lower() in m.lower() and m not in near]
+                hint = f"  did you mean: {', '.join(near[:3])}?" if near else ""
+                ui.error(f"unknown model '{model}' — not saved.{hint}")
+            else:
+                h.set_session_model(session, model)
+                prefs.save(model=model)
+                ui.success(f"model set to '{model}' for this session and saved as the default")
     elif cmd == "/budget":
         if not args or ui.is_query(args):
             ui.info(f"budget: {session.token_budget or 'unlimited'}")
@@ -303,6 +314,12 @@ def _run_command(h: Harness, session, external_id: str, line: str, run, last):
             )
         else:
             ui.error("usage: /mcp [http <url> [name]] | [stdio <name> <cmd...>] | [remove <name>] [--direct]")
+    elif cmd in ("/auto", "/manual"):
+        mode = h.permissions.set_mode(cmd[1:])
+        prefs.save(permission_mode=mode)
+        ui.success(f"permission mode: {mode}")
+    elif cmd == "/mode":
+        ui.info(f"permission mode: {h.permissions.mode}  (/auto · /manual)")
     elif cmd == "/new":
         h.close_session(session)
         session = h.start_session(external_id)
@@ -419,6 +436,10 @@ def chat(argv: list[str]) -> int:
         echo=False,
         persona=saved["persona"],
         system_prompt=saved["system_prompt"],
+        # Interactive chat runs Bash in the directory you launched from, so the
+        # agent works on your actual project (like Claude Code) instead of an
+        # isolated empty tempdir. The workspace is never deleted on session end.
+        sandbox=LocalSubprocessSandbox(max_output=cfg.bash.max_output, workspace=os.getcwd()),
     )
     external_id = (
         (argv[2] if len(argv) > 2 and not argv[2].startswith("-") else "").strip()
@@ -465,6 +486,20 @@ def _chat_plain(h: Harness, cfg: Config, external_id: str) -> int:
             ui.mcp_failed(name, url, Exception(extra))
     state = {"session": session, "last": {"user": "", "answer": ""}}
 
+    def ask_permission(name: str, args: dict) -> str:
+        """Manual-mode prompt for the line-based REPL."""
+        from ..core import ALLOW, ALWAYS, DENY
+
+        label = ui.tool_display_name(name, args)
+        ui.console.print(f"\n[{ui.C_ACCENT}]permission[/] {label}  [dim][y]allow [a]always [n]deny[/]")
+        try:
+            answer = ui.console.input("  > ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            return DENY
+        return {"y": ALLOW, "a": ALWAYS, "": ALLOW}.get(answer, DENY)
+
+    h.permissions.asker = ask_permission
+
     def run(message: str) -> None:
         state["last"]["user"] = message
         view = _TurnView(state["session"].token_budget)
@@ -506,8 +541,20 @@ def serve(argv: list[str]) -> int:
 
 
 def main(argv: list[str]) -> int:
+    # Config precedence (highest first): real shell env var > a `.env` in the
+    # current folder (project-local override) > a global `~/.harness/.env`. This
+    # lets `harness` run from ANY directory once you drop your keys in the global
+    # file, while a project can still override per-folder — `_load_dotenv` only
+    # fills keys not already set, so loading cwd before global gives cwd priority.
     _load_dotenv()
+    _load_dotenv(str(Path.home() / ".harness" / ".env"))
     cmd = argv[1] if len(argv) > 1 else "chat"
+    if cmd in ("--version", "-V", "version"):
+        print(f"harness {__version__}")
+        return 0
+    if cmd in ("--help", "-h", "help"):
+        ui.cli_help()
+        return 0
     if cmd == "init-db":
         return init_db()
     if cmd == "chat":

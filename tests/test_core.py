@@ -130,6 +130,58 @@ def test_loop_tool_call_runs_bash():
     assert tool_turns and "xyz" in tool_turns[0].content["content"]
 
 
+def _queue_bash(p, cmd="echo xyz"):
+    p.queue(tool_calls=[{"id": "c1", "function": {"name": "Bash", "arguments": f'{{"command": "{cmd}"}}'}}])
+    p.queue(content="done")
+
+
+def test_manual_mode_denies_tool_call():
+    from harness.settings import PermissionConfig
+
+    p = FakeProvider(context_window=4000)
+    _queue_bash(p, "echo shouldnotrun")
+    h = _harness(p, permissions=PermissionConfig(mode="manual"))
+    from harness.core import DENY
+
+    h.permissions.asker = lambda name, args: DENY
+    s = h.start_session("u1")
+    r = h.run_turn(s, "run it")
+    assert r.status == "ok"
+    tool_turns = [t for t in h.repo.turns if t.role == "tool"]
+    assert tool_turns and "denied by the user" in tool_turns[0].content["content"]
+    assert "shouldnotrun" not in tool_turns[0].content["content"]
+
+
+def test_manual_mode_always_remembers_for_session():
+    from harness.core import ALWAYS
+    from harness.settings import PermissionConfig
+
+    p = FakeProvider(context_window=4000)
+    _queue_bash(p, "echo first")
+    _queue_bash(p, "echo second")  # a second turn's worth
+    h = _harness(p, permissions=PermissionConfig(mode="manual"))
+    asked = []
+    h.permissions.asker = lambda name, args: (asked.append(name), ALWAYS)[1]
+    s = h.start_session("u1")
+    h.run_turn(s, "one")
+    h.run_turn(s, "two")
+    assert asked == ["Bash"]  # asked once; ALWAYS remembered for the rest of the session
+    out = [t.content["content"] for t in h.repo.turns if t.role == "tool"]
+    assert any("first" in c for c in out) and any("second" in c for c in out)
+
+
+def test_auto_mode_never_asks():
+    p = FakeProvider(context_window=4000)
+    _queue_bash(p, "echo ran")
+    h = _harness(p)  # default auto
+    called = []
+    h.permissions.asker = lambda name, args: called.append(name) or "deny"
+    s = h.start_session("u1")
+    h.run_turn(s, "go")
+    assert called == []  # auto mode bypasses the asker entirely
+    assert any("ran" in t.content["content"] for t in h.repo.turns if t.role == "tool")
+
+
 def test_budget_guard_returns_partial():
     p = FakeProvider(context_window=4000)
     for _ in range(10):
@@ -168,20 +220,6 @@ def test_persona_loaded_from_file(tmp_path):
     persona.write_text("<!-- header -->\nYou are Nyx, a poetic assistant.")
     sp = build_system_prompt(str(persona))
     assert "Nyx" in sp and "poetic" in sp
-
-
-def test_persona_deprecated_soul_fallback(tmp_path, monkeypatch):
-    import warnings
-
-    from harness.memory.persona import build_system_prompt
-
-    monkeypatch.chdir(tmp_path)
-    (tmp_path / "SOUL.md").write_text("You are Nyx, a poetic assistant.")
-    with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter("always")
-        sp = build_system_prompt()  # no PERSONA.md in cwd -> falls back to SOUL.md
-    assert "Nyx" in sp
-    assert any(issubclass(w.category, DeprecationWarning) for w in caught)
 
 
 def test_harness_uses_persona():
@@ -264,6 +302,54 @@ def test_bash_truncates_large_output():
     assert "characters elided" in res.stdout
     assert len(res.stdout) < 800
     sb.destroy("sess")
+
+
+def _call(h, s, name, **args):
+    import json
+
+    return h.tools.dispatch(
+        s, {"id": "x", "function": {"name": name, "arguments": json.dumps(args)}}
+    )["content"]
+
+
+def test_write_creates_file_then_edit_replaces():
+    h = _harness(FakeProvider(context_window=4000))
+    s = h.start_session("u1")
+    out = _call(h, s, "Write", path="pkg/mod.py", content="a = 1\nb = 2\n")
+    assert "Wrote 2 line" in out
+    assert h.sandbox.read_file(s.id, "pkg/mod.py") == "a = 1\nb = 2\n"
+    out = _call(h, s, "Edit", path="pkg/mod.py", old_string="a = 1", new_string="a = 99")
+    assert "1 replacement" in out
+    assert h.sandbox.read_file(s.id, "pkg/mod.py") == "a = 99\nb = 2\n"
+
+
+def test_edit_requires_unique_match_unless_replace_all():
+    h = _harness(FakeProvider(context_window=4000))
+    s = h.start_session("u1")
+    _call(h, s, "Write", path="d.txt", content="x\nx\n")
+    dup = _call(h, s, "Edit", path="d.txt", old_string="x", new_string="y")
+    assert "ERROR" in dup and "2 times" in dup
+    ok = _call(h, s, "Edit", path="d.txt", old_string="x", new_string="y", replace_all=True)
+    assert "2 replacements" in ok
+    assert h.sandbox.read_file(s.id, "d.txt") == "y\ny\n"
+
+
+def test_edit_errors_on_missing_file_and_absent_string():
+    h = _harness(FakeProvider(context_window=4000))
+    s = h.start_session("u1")
+    assert "not found" in _call(h, s, "Edit", path="ghost", old_string="a", new_string="b")
+    _call(h, s, "Write", path="f.txt", content="hello")
+    assert "not found" in _call(h, s, "Edit", path="f.txt", old_string="NOPE", new_string="b")
+
+
+def test_write_and_edit_share_bash_working_dir():
+    h = _harness(FakeProvider(context_window=4000))
+    s = h.start_session("u1")
+    _call(h, s, "Bash", command="mkdir sub && cd sub")
+    _call(h, s, "Write", path="in_sub.txt", content="here")
+    # relative path resolved against the cwd Bash left us in (now inside sub/)
+    cat = _call(h, s, "Bash", command="cat in_sub.txt")
+    assert "here" in cat and "<exit_code>0</exit_code>" in cat
 
 
 def test_unlimited_token_budget():
@@ -706,6 +792,8 @@ def test_openrouter_stream_sse_accumulation():
     lines = [f"data: {_json.dumps(c)}" for c in chunks] + ["data: [DONE]"]
 
     class StubStreamResp:
+        is_success = True
+
         def __enter__(self):
             return self
 
@@ -932,6 +1020,128 @@ def test_detect_provider_precedence():
     assert isinstance(detect_provider(none), FakeProvider)
     assert provider_label(none) == "FakeProvider (offline)"
 
+    # Vertex (project set) beats OpenRouter; Bedrock (region set) beats OpenRouter.
+    from harness.llm.provider import BedrockProvider, VertexProvider
+
+    vx = Config(provider=ProviderConfig(vertex_project="p", openrouter_api_key="sk-or-x"))
+    assert isinstance(detect_provider(vx), VertexProvider)
+    assert provider_label(vx) == "Google Vertex AI"
+
+    br = Config(provider=ProviderConfig(bedrock_region="us-east-1", openrouter_api_key="sk-or-x"))
+    assert isinstance(detect_provider(br), BedrockProvider)
+    assert provider_label(br) == "AWS Bedrock"
+
+
+def test_bedrock_openai_to_converse_translation():
+    """OpenAI-shaped messages/tools map to the Converse schema: system split out,
+    consecutive same-role turns merged, tool_calls -> toolUse, tool -> toolResult."""
+    from harness.llm.provider import BedrockProvider
+    from harness.settings import ProviderConfig
+
+    prov = BedrockProvider(ProviderConfig(bedrock_region="us-east-1"))
+    system, conv = prov._to_converse(
+        [
+            {"role": "system", "content": "be terse"},
+            {"role": "user", "content": "run ls"},
+            {
+                "role": "assistant",
+                "content": "sure",
+                "tool_calls": [
+                    {"id": "t1", "function": {"name": "Bash", "arguments": '{"command": "ls"}'}}
+                ],
+            },
+            {"role": "tool", "tool_call_id": "t1", "content": "file.txt"},
+            {"role": "user", "content": "thanks"},
+        ]
+    )
+    assert system == [{"text": "be terse"}]
+    assert conv[0] == {"role": "user", "content": [{"text": "run ls"}]}
+    assert conv[1]["role"] == "assistant"
+    tu = conv[1]["content"][1]["toolUse"]
+    assert tu == {"toolUseId": "t1", "name": "Bash", "input": {"command": "ls"}}
+    # tool result + following user turn merge into ONE user message (alternation).
+    assert conv[2]["role"] == "user"
+    assert conv[2]["content"][0]["toolResult"]["toolUseId"] == "t1"
+    assert conv[2]["content"][-1] == {"text": "thanks"}
+
+    tcfg = prov._tool_config([
+        {"type": "function", "function": {"name": "Bash", "description": "run", "parameters": {"type": "object"}}}
+    ])
+    spec = tcfg["tools"][0]["toolSpec"]
+    assert spec["name"] == "Bash" and spec["inputSchema"] == {"json": {"type": "object"}}
+
+
+class _StubBedrockRuntime:
+    """Minimal boto3 bedrock-runtime stand-in for complete()/converse_stream()."""
+
+    def __init__(self, converse=None, stream_events=None):
+        self._converse = converse
+        self._events = stream_events or []
+        self.calls = {}
+
+    def converse(self, **kwargs):
+        self.calls["converse"] = kwargs
+        return self._converse
+
+    def converse_stream(self, **kwargs):
+        self.calls["converse_stream"] = kwargs
+        return {"stream": iter(self._events)}
+
+
+def test_bedrock_complete_translates_response():
+    """Converse response (text + toolUse + usage) -> OpenAI-shaped ModelResult."""
+    from harness.llm.provider import BedrockProvider
+    from harness.settings import ProviderConfig
+
+    prov = BedrockProvider(ProviderConfig(bedrock_region="us-east-1"))
+    prov._runtime = _StubBedrockRuntime(
+        converse={
+            "output": {
+                "message": {
+                    "role": "assistant",
+                    "content": [
+                        {"text": "hi"},
+                        {"toolUse": {"toolUseId": "t9", "name": "Bash", "input": {"command": "ls"}}},
+                    ],
+                }
+            },
+            "usage": {"inputTokens": 11, "outputTokens": 7},
+        }
+    )
+    res = prov.complete("anthropic.claude", [{"role": "user", "content": "yo"}], tools=None)
+    assert res.text == "hi"
+    tc = res.tool_calls[0]
+    assert tc["id"] == "t9" and tc["function"]["name"] == "Bash"
+    assert tc["function"]["arguments"] == '{"command": "ls"}'  # dict re-serialized to JSON string
+    assert res.tokens_in == 11 and res.tokens_out == 7
+
+
+def test_bedrock_stream_assembles_text_and_tool_calls():
+    """converse_stream events -> yielded text deltas + assembled tool_calls + usage."""
+    from harness.llm.provider import BedrockProvider
+    from harness.settings import ProviderConfig
+
+    prov = BedrockProvider(ProviderConfig(bedrock_region="us-east-1"))
+    prov._runtime = _StubBedrockRuntime(
+        stream_events=[
+            {"contentBlockDelta": {"contentBlockIndex": 0, "delta": {"text": "Hel"}}},
+            {"contentBlockDelta": {"contentBlockIndex": 0, "delta": {"text": "lo"}}},
+            {"contentBlockStart": {"contentBlockIndex": 1, "start": {"toolUse": {"toolUseId": "t1", "name": "Bash"}}}},
+            {"contentBlockDelta": {"contentBlockIndex": 1, "delta": {"toolUse": {"input": '{"command":'}}}},
+            {"contentBlockDelta": {"contentBlockIndex": 1, "delta": {"toolUse": {"input": ' "ls"}'}}}},
+            {"metadata": {"usage": {"inputTokens": 3, "outputTokens": 4}}},
+        ]
+    )
+    deltas, res = _drain(
+        prov.stream("m", [{"role": "user", "content": "hi"}], tools=[{"type": "function"}])
+    )
+    assert "".join(deltas) == "Hello"
+    assert res.text == "Hello"
+    tc = res.tool_calls[0]
+    assert tc["id"] == "t1" and tc["function"]["name"] == "Bash"
+    assert tc["function"]["arguments"] == '{"command": "ls"}'
+    assert res.tokens_in == 3 and res.tokens_out == 4
+
 
 def test_build_provider_requires_explicit_name():
     """build_provider(cfg) never sniffs config contents — it's a pure
@@ -977,6 +1187,8 @@ def test_azure_complete_api_key_and_params():
     captured: dict = {}
 
     class StubResp:
+        is_success = True
+
         def raise_for_status(self):
             pass
 
@@ -1063,6 +1275,8 @@ def test_azure_stream_reuses_openai_base():
     captured: dict = {}
 
     class StubStreamResp:
+        is_success = True
+
         def __enter__(self):
             return self
 

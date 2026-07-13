@@ -39,6 +39,7 @@ def test_save_merges_rather_than_overwrites(temp_store):
         "model": "gpt-5",
         "token_budget": None,
         "response_reserve_tokens": None,
+        "permission_mode": "",
     }
 
 
@@ -54,6 +55,30 @@ def test_apply_defaults_uses_saved_prefs_as_fallback(temp_store, monkeypatch):
     cfg = prefs.apply_defaults(Config())
     assert cfg.provider.model == "gpt-5"
     assert cfg.loop.token_budget_per_session == 0
+
+
+def test_permission_mode_default_and_env():
+    from harness.settings import PermissionConfig
+
+    assert PermissionConfig.from_env({}).mode == "auto"  # default: all commands approved
+    assert PermissionConfig.from_env({"HARNESS_PERMISSION_MODE": "manual"}).mode == "manual"
+    assert PermissionConfig.from_env({"HARNESS_PERMISSION_MODE": "bogus"}).mode == "auto"
+
+
+def test_permission_mode_saved_pref_applies(temp_store, monkeypatch):
+    monkeypatch.delenv("HARNESS_PERMISSION_MODE", raising=False)
+    prefs.save(permission_mode="manual")
+    cfg = prefs.apply_defaults(Config())
+    assert cfg.permissions.mode == "manual"
+
+
+def test_permission_mode_real_env_wins_over_pref(temp_store, monkeypatch):
+    # A real shell env var outranks a saved preference: apply_defaults must NOT
+    # overwrite the env-derived mode with the pref. Config() defaults to "auto".
+    monkeypatch.setenv("HARNESS_PERMISSION_MODE", "auto")
+    prefs.save(permission_mode="manual")
+    cfg = prefs.apply_defaults(Config(), from_dotenv=frozenset())
+    assert cfg.permissions.mode == "auto"
 
 
 def test_apply_defaults_real_env_var_wins_over_prefs(temp_store, monkeypatch):

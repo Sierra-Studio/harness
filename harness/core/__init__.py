@@ -5,6 +5,7 @@ from __future__ import annotations
 from ..models import Session, Skill, Summary, ToolSpec, Turn, User
 from .app import Harness
 from .loop import AgentLoop, Hook, LoopEvent, TurnResult
+from .permissions import ALLOW, ALWAYS, DENY, Permissions
 
 __all__ = [
     "Harness",
@@ -12,6 +13,10 @@ __all__ = [
     "Hook",
     "LoopEvent",
     "TurnResult",
+    "Permissions",
+    "ALLOW",
+    "ALWAYS",
+    "DENY",
     "User",
     "Session",
     "Turn",

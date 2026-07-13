@@ -140,6 +140,176 @@ def test_transcript_markdown():
     assert "ignored" not in md  # tool turns are omitted
 
 
+def test_input_suggester_completes_slash_commands_only(tmp_path):
+    import asyncio
+
+    from harness.interfaces.tui import InputSuggester
+
+    sug = InputSuggester(["/help", "/skills", "/skills add"])
+
+    async def ask(v):
+        return await sug.get_suggestion(v)
+
+    assert asyncio.run(ask("/sk")) == "/skills"
+    assert asyncio.run(ask("/skills a")) == "/skills add"
+    assert asyncio.run(ask("@app")) is None  # @ handled by the dropdown, not ghost text
+    assert asyncio.run(ask("plain")) is None
+
+
+def test_list_path_matches_and_mention_partial(tmp_path):
+    from harness.interfaces.tui import _list_path_matches, _mention_partial
+
+    (tmp_path / "app").mkdir()
+    (tmp_path / "app" / "main.py").write_text("x")
+    (tmp_path / "README.md").write_text("x")
+    (tmp_path / ".git").mkdir()
+
+    # directories sort first and get a trailing slash; ignore-list is skipped
+    assert _list_path_matches(tmp_path, "") == ["app/", "README.md"]
+    assert _list_path_matches(tmp_path, "RE") == ["README.md"]
+    assert _list_path_matches(tmp_path, "app/") == ["app/main.py"]
+    assert _list_path_matches(tmp_path, ".g") == []  # .git ignored
+
+    assert _mention_partial("look @app/ma") == "app/ma"
+    assert _mention_partial("@") == ""
+    assert _mention_partial("no mention here") is None
+
+
+def test_expand_mentions_inlines_files(tmp_path):
+    from harness.interfaces.tui import HarnessApp
+
+    (tmp_path / "a.txt").write_text("AAA")
+    (tmp_path / "b.txt").write_text("BBB")
+
+    class Stub:
+        _root = tmp_path
+
+    sent, attached = HarnessApp._expand_mentions(Stub(), "see @a.txt and @b.txt, plus @missing.txt")
+    assert attached == ["a.txt", "b.txt"]  # missing file skipped
+    assert '<file path="a.txt">\nAAA\n</file>' in sent
+    assert '<file path="b.txt">\nBBB\n</file>' in sent
+    assert "@missing.txt" in sent  # unresolved mention stays as text
+    assert HarnessApp._expand_mentions(Stub(), "no mentions") == ("no mentions", [])
+
+
+def test_expand_mentions_expands_directories(tmp_path):
+    from harness.interfaces.tui import HarnessApp
+
+    (tmp_path / "pkg").mkdir()
+    (tmp_path / "pkg" / "one.py").write_text("1")
+    (tmp_path / "pkg" / "two.py").write_text("2")
+    (tmp_path / "pkg" / "__pycache__").mkdir()
+    (tmp_path / "pkg" / "__pycache__" / "x.pyc").write_text("bin")
+
+    class Stub:
+        _root = tmp_path
+
+    # @pkg/ (or @pkg) pulls in every file under the dir, pruning ignore-listed dirs
+    sent, attached = HarnessApp._expand_mentions(Stub(), "review @pkg/")
+    assert set(attached) == {"pkg/one.py", "pkg/two.py"}
+    assert '<file path="pkg/one.py">' in sent and '<file path="pkg/two.py">' in sent
+    assert "__pycache__" not in sent
+
+
+def test_keyboard_scrolls_log_without_stealing_input_focus():
+    import asyncio
+    import dataclasses
+
+    from rich.text import Text
+    from textual.containers import VerticalScroll
+
+    from harness.core import Harness
+    from harness.llm.provider import FakeProvider
+    from harness.settings import Config
+    from harness.interfaces.tui import HarnessApp
+
+    async def scenario():
+        h = Harness(
+            dataclasses.replace(Config(), database_url=""),
+            system_prompt="s",
+            provider=FakeProvider(context_window=8000),
+        )
+        app = HarnessApp(h, h.start_session("u"), "u", "F", "f", [])
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            for i in range(80):
+                app._write(Text(f"line {i}"))
+            await pilot.pause()
+            log = app.query_one("#log", VerticalScroll)
+            bottom = log.scroll_offset.y
+            assert bottom > 0
+            await pilot.press("pageup")
+            await pilot.pause()
+            assert log.scroll_offset.y < bottom  # scrolled up
+            await pilot.press("ctrl+home")
+            await pilot.pause()
+            assert log.scroll_offset.y == 0  # jumped to top
+            await pilot.press("ctrl+end")
+            await pilot.pause()
+            assert log.scroll_offset.y == bottom  # back to bottom
+            await pilot.press("h", "i")  # input kept focus
+            await pilot.pause()
+            assert app.query_one("#prompt").value == "hi"
+
+    asyncio.run(scenario())
+
+
+def test_at_dropdown_multi_match_navigate_and_pick(tmp_path):
+    import asyncio
+    import dataclasses
+
+    from harness.core import Harness
+    from harness.interfaces.tui import HarnessApp, PromptInput
+    from harness.llm.provider import FakeProvider
+    from harness.settings import Config
+    from harness.tools import LocalSubprocessSandbox
+
+    (tmp_path / "alpha.txt").write_text("A")
+    (tmp_path / "apple.txt").write_text("APPLE")
+
+    async def scenario():
+        sb = LocalSubprocessSandbox(workspace=str(tmp_path))
+        h = Harness(
+            dataclasses.replace(Config(), database_url=""),
+            system_prompt="s",
+            provider=FakeProvider(context_window=8000),
+            sandbox=sb,
+        )
+        app = HarnessApp(h, h.start_session("u"), "u", "F", "f", [])
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert app.query_one("#ac").display is False
+            await pilot.press("@", "a")
+            await pilot.pause()
+            assert app._ac_open and app._ac_matches == ["alpha.txt", "apple.txt"]
+            await pilot.press("down")  # move selection to apple.txt
+            await pilot.pause()
+            assert app._ac_sel == 1
+            await pilot.press("enter")  # pick it (does not submit)
+            await pilot.pause()
+            assert app.query_one("#prompt", PromptInput).value == "@apple.txt "
+            assert app._ac_open is False and app._busy is False
+
+    asyncio.run(scenario())
+
+
+def test_cli_version_flag(capsys):
+    from harness import __version__
+    from harness.interfaces.cli import main
+
+    for flag in ("--version", "-V", "version"):
+        assert main(["harness", flag]) == 0
+        assert capsys.readouterr().out.strip() == f"harness {__version__}"
+
+
+def test_cli_help_flag_exits_zero_but_unknown_is_error(capsys):
+    from harness.interfaces.cli import main
+
+    assert main(["harness", "--help"]) == 0
+    capsys.readouterr()
+    assert main(["harness", "bogus-cmd"]) == 1  # unknown command still errors
+
+
 def test_turn_summary_flags_over_budget():
     class R:
         status = "ok"

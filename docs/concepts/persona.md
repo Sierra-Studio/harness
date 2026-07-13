@@ -32,10 +32,6 @@ content) to fall back to the built-in default identity. Comment-only files
 To bypass the layered assembly entirely, pass `system_prompt=...` directly to
 `Harness`.
 
-!!! note "Deprecated: SOUL.md"
-    `SOUL.md` is still read as a fallback filename for one release (logged as a
-    deprecation warning) if no `PERSONA.md` is found. Rename to `PERSONA.md`.
-
 ## Skills in the prompt
 
 `skills_block()` renders up to `MemoryConfig.skills_in_prompt_limit` (default

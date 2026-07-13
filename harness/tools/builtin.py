@@ -383,6 +383,110 @@ class Bash(Tool):
         return "\n".join(parts)
 
 
+class Write(Tool):
+    name = "Write"
+    description = (
+        "Create a file or completely overwrite an existing one with the given "
+        "content. Parent directories are created as needed. Paths are relative to "
+        "your working directory (the same one Bash uses) unless absolute. This "
+        "REPLACES the entire file — to change part of an existing file use Edit "
+        "instead, which is safer. Returns the path written and the line count."
+    )
+    parameters = {
+        "type": "object",
+        "properties": {
+            "path": {"type": "string", "description": "File path (relative to cwd or absolute)."},
+            "content": {"type": "string", "description": "The full file content to write."},
+        },
+        "required": ["path", "content"],
+    }
+    guidance = (
+        "- Write(path, content): create a new file or overwrite one wholesale. It writes "
+        "the ENTIRE file, so only use it for new files or a deliberate full rewrite; for a "
+        "targeted change to an existing file use Edit instead (it can't clobber the rest)."
+    )
+
+    def run(self, ctx: ToolContext, session: Session, args: dict) -> str:
+        path = str(args.get("path", "")).strip()
+        content = args.get("content")
+        if not path:
+            return "ERROR: 'path' is required."
+        if not isinstance(content, str):
+            return "ERROR: 'content' must be a string (use \"\" for an empty file)."
+        try:
+            written = ctx.sandbox.write_file(session.id, path, content)
+        except (OSError, NotImplementedError) as e:
+            return f"ERROR: could not write {path!r}: {e}"
+        return f"Wrote {len(content.splitlines())} line(s) to {written}"
+
+
+class Edit(Tool):
+    name = "Edit"
+    description = (
+        "Replace an exact string in an existing file, leaving the rest untouched. "
+        "'old_string' must appear EXACTLY (including whitespace/indentation) and be "
+        "UNIQUE in the file, or the edit is rejected — include enough surrounding "
+        "context to make it unique. Set 'replace_all' to true to replace every "
+        "occurrence instead. Read the file first (e.g. with Bash `cat`) so your "
+        "'old_string' matches. Paths resolve like Write's. To create a file or "
+        "rewrite it entirely, use Write."
+    )
+    parameters = {
+        "type": "object",
+        "properties": {
+            "path": {"type": "string", "description": "File to edit (relative to cwd or absolute)."},
+            "old_string": {"type": "string", "description": "Exact text to replace."},
+            "new_string": {"type": "string", "description": "Replacement text."},
+            "replace_all": {
+                "type": "boolean",
+                "description": "Replace every occurrence instead of requiring a unique match.",
+                "default": False,
+            },
+        },
+        "required": ["path", "old_string", "new_string"],
+    }
+    guidance = (
+        "- Edit(path, old_string, new_string, replace_all?): make a surgical, in-place change "
+        "to an existing file. old_string must match EXACTLY and be unique (add surrounding "
+        "context) unless replace_all is true. Prefer Edit over Write for changing existing "
+        "files — it can't accidentally wipe unrelated content. Read the file first so the "
+        "match is exact."
+    )
+
+    def run(self, ctx: ToolContext, session: Session, args: dict) -> str:
+        path = str(args.get("path", "")).strip()
+        old = args.get("old_string")
+        new = args.get("new_string")
+        if not path:
+            return "ERROR: 'path' is required."
+        if not isinstance(old, str) or not isinstance(new, str):
+            return "ERROR: 'old_string' and 'new_string' must both be strings."
+        if old == new:
+            return "ERROR: 'old_string' and 'new_string' are identical — nothing to change."
+        try:
+            content = ctx.sandbox.read_file(session.id, path)
+        except FileNotFoundError:
+            return f"ERROR: file not found: {path} (use Write to create it)."
+        except (OSError, NotImplementedError) as e:
+            return f"ERROR: could not read {path!r}: {e}"
+        count = content.count(old)
+        if count == 0:
+            return f"ERROR: 'old_string' not found in {path}. Read the file and match it exactly."
+        replace_all = bool(args.get("replace_all"))
+        if count > 1 and not replace_all:
+            return (
+                f"ERROR: 'old_string' appears {count} times in {path}. Add surrounding context "
+                "to make it unique, or set replace_all=true."
+            )
+        updated = content.replace(old, new) if replace_all else content.replace(old, new, 1)
+        try:
+            written = ctx.sandbox.write_file(session.id, path, updated)
+        except (OSError, NotImplementedError) as e:
+            return f"ERROR: could not write {path!r}: {e}"
+        edits = count if replace_all else 1
+        return f"Edited {written} ({edits} replacement{'s' if edits != 1 else ''})"
+
+
 class RenderUI(Tool):
     name = "RenderUI"
     description = (
@@ -448,6 +552,8 @@ def default_tools() -> list[Tool]:
         SearchSkills(),
         GetSkill(),
         Bash(),
+        Write(),
+        Edit(),
         RenderUI(),
     ]
 

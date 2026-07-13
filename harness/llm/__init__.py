@@ -4,11 +4,13 @@ from __future__ import annotations
 
 from .provider import (
     AzureFoundryProvider,
+    BedrockProvider,
     FakeProvider,
     ModelResult,
     OpenAICompatibleProvider,
     OpenRouterProvider,
     Provider,
+    VertexProvider,
     build_provider,
     detect_provider,
     provider_label,
@@ -22,6 +24,8 @@ __all__ = [
     "OpenAICompatibleProvider",
     "OpenRouterProvider",
     "AzureFoundryProvider",
+    "VertexProvider",
+    "BedrockProvider",
     "FakeProvider",
     "build_provider",
     "detect_provider",

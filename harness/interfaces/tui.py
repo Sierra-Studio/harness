@@ -13,23 +13,128 @@ REPL (see `cli.py`) when stdout/stdin aren't a TTY.
 
 from __future__ import annotations
 
-from typing import Any
+import os
+import re
+import threading
+from pathlib import Path
+from typing import Any, cast
 
 from rich.markdown import Markdown
+from rich.text import Text
 from textual import on, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import VerticalScroll
-from textual.suggester import SuggestFromList
+from textual.containers import Vertical, VerticalScroll
+from textual.suggester import Suggester
 from textual.widgets import Header, Input, Static
 
+from ..core import DENY
 from . import mcpstore, prefs, ui
+
+# directories skipped in @-path autocomplete / directory expansion
+_MENTION_IGNORE = {".git", "__pycache__", ".venv", "node_modules", ".mypy_cache", ".ruff_cache", ".pytest_cache"}
+_MENTION_MAX_BYTES = 100_000  # per-file cap when inlining an @mention's contents
+_MENTION_MAX_FILES = 25  # cap when an @mention points at a directory
+
+
+def _mention_partial(value: str) -> str | None:
+    """The active @-mention being typed (text after the last space that starts
+    with `@`), or None if the cursor isn't in an @token. Returns the part after
+    the `@`, so `look @app/ma` -> `app/ma` and `@` -> `` (list everything)."""
+    token = value.rpartition(" ")[2]
+    return token[1:] if token.startswith("@") else None
+
+
+def _list_path_matches(root: Path, partial: str, limit: int = 10) -> list[str]:
+    """Filesystem completions for a partial @-path, relative to `root`. Each is a
+    completed relative path with a trailing `/` for directories. Directories sort
+    first, then files, alphabetically; ignore-listed names are skipped."""
+    if partial.endswith("/"):
+        directory, name = partial, ""
+    else:
+        p = Path(partial)
+        directory = "" if p.parent == Path(".") else f"{p.parent}/"
+        name = p.name
+    base = root / directory if directory else root
+    try:
+        entries = sorted(base.iterdir(), key=lambda e: (not e.is_dir(), e.name.lower()))
+    except OSError:
+        return []
+    low = name.lower()
+    out: list[str] = []
+    for e in entries:
+        if e.name in _MENTION_IGNORE:
+            continue
+        if e.name.lower().startswith(low):
+            out.append(f"{directory}{e.name}" + ("/" if e.is_dir() else ""))
+            if len(out) >= limit:
+                break
+    return out
+
+
+def _collect_dir_files(directory: Path, root: Path, limit: int = _MENTION_MAX_FILES) -> list[str]:
+    """Relative paths of files under `directory` (recursive), pruning ignore-listed
+    subdirs and stopping at `limit` files. Used to expand an @dir/ mention."""
+    out: list[str] = []
+    for cur, dirs, files in os.walk(directory):
+        dirs[:] = sorted(d for d in dirs if d not in _MENTION_IGNORE)
+        for fn in sorted(files):
+            if fn in _MENTION_IGNORE:
+                continue
+            out.append(os.path.relpath(os.path.join(cur, fn), root))
+            if len(out) >= limit:
+                return out
+    return out
+
+
+class InputSuggester(Suggester):
+    """Ghost-text completion for `/commands`. `@file` mentions get a richer
+    multi-match dropdown instead (see HarnessApp._ac_*), so this stays out of
+    their way and only completes slash commands."""
+
+    def __init__(self, commands: list[str]) -> None:
+        super().__init__(use_cache=False, case_sensitive=False)
+        self._commands = commands
+
+    async def get_suggestion(self, value: str) -> str | None:
+        if not value.startswith("/"):
+            return None
+        low = value.lower()
+        return next((c for c in self._commands if c.lower().startswith(low)), None)
+
+
+def _os_clipboard_write(text: str) -> str | None:
+    """Write text to the OS clipboard via a local tool, more reliable than OSC-52.
+
+    OSC-52 (Textual's `copy_to_clipboard`) is silently dropped by some terminals
+    (e.g. the VS Code integrated terminal), so we also pipe to the platform's
+    clipboard command when one is present. Returns the tool name used, or None
+    if none is available (in which case OSC-52 remains the only path)."""
+    import shutil
+    import subprocess
+    import sys
+
+    if sys.platform == "darwin":
+        candidates = [["pbcopy"]]
+    elif sys.platform == "win32":
+        candidates = [["clip"]]
+    else:
+        candidates = [["wl-copy"], ["xclip", "-selection", "clipboard"], ["xsel", "-b", "-i"]]
+    for cmd in candidates:
+        if shutil.which(cmd[0]) is None:
+            continue
+        try:
+            subprocess.run(cmd, input=text.encode(), check=True)
+            return cmd[0]
+        except (OSError, subprocess.CalledProcessError):
+            continue
+    return None
 
 # slash commands offered as ghost-text autocomplete (ordered by how completions resolve)
 _SLASH_NAMES = [
     "/help", "/session", "/sessions", "/skills", "/skills add", "/tools", "/mcp",
     "/resume", "/retry", "/copy", "/save", "/persona", "/system-prompt", "/model",
-    "/budget", "/theme", "/clear", "/new", "/exit", "/quit",
+    "/budget", "/theme", "/mode", "/auto", "/manual", "/clear", "/new", "/exit", "/quit",
 ]
 
 
@@ -48,14 +153,20 @@ class PromptInput(Input):
     ]
 
     def action_complete(self) -> None:
-        """Tab accepts the ghost-text suggestion instead of moving focus away."""
+        """Tab accepts the highlighted @file match if the dropdown is open,
+        else the ghost-text (slash-command) suggestion."""
+        app = cast("HarnessApp", self.app)
+        if app._ac_open and app._ac_accept():
+            return
         suggestion = self._suggestion
         if suggestion and len(suggestion) > len(self.value):
             self.value = suggestion
             self.cursor_position = len(self.value)
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
-        super().__init__(*args, suggester=SuggestFromList(_SLASH_NAMES, case_sensitive=False), **kwargs)
+        # The suggester (slash commands + @file paths) is installed at mount,
+        # once the app knows the workspace root — see HarnessApp.on_mount.
+        super().__init__(*args, **kwargs)
         self.history: list[str] = []
         self._idx: int | None = None
         self._draft = ""
@@ -67,6 +178,11 @@ class PromptInput(Input):
         self._draft = ""
 
     def action_history_prev(self) -> None:
+        # While the @file dropdown is open, ↑/↓ move its selection instead.
+        app = cast("HarnessApp", self.app)
+        if app._ac_open:
+            app._ac_move(-1)
+            return
         if not self.history:
             return
         if self._idx is None:
@@ -78,6 +194,10 @@ class PromptInput(Input):
         self.cursor_position = len(self.value)
 
     def action_history_next(self) -> None:
+        app = cast("HarnessApp", self.app)
+        if app._ac_open:
+            app._ac_move(1)
+            return
         if self._idx is None:
             return
         if self._idx < len(self.history) - 1:
@@ -89,14 +209,61 @@ class PromptInput(Input):
         self.cursor_position = len(self.value)
 
 
+class PermissionBar(Static):
+    """Inline manual-mode approval prompt shown below the input (not a modal).
+
+    Hidden until `ask()` reveals it and grabs focus; the y/a/n/esc keys resolve
+    the pending decision through a resolver callback, then focus returns to the
+    input. One prompt is live at a time (the loop blocks on each call)."""
+
+    can_focus = True
+
+    BINDINGS = [
+        Binding("y", "decide('allow')", show=False),
+        Binding("a", "decide('always')", show=False),
+        Binding("n", "decide('deny')", show=False),
+        Binding("escape", "decide('deny')", show=False),
+    ]
+
+    def __init__(self, **kwargs: Any) -> None:
+        super().__init__("", **kwargs)
+        self._resolver: Any = None
+
+    def ask(self, display: str, summary: str, resolver: Any) -> None:
+        self._resolver = resolver
+        body = Text()
+        body.append("permission  ", style="bold")
+        body.append(display, style="bold")
+        if summary:
+            body.append(f"  {summary}", style="dim")
+        body.append("\n")
+        body.append("[y] allow once   [a] allow all session   [n]/esc deny", style="dim")
+        self.update(body)
+        self.display = True
+        self.focus()
+
+    def action_decide(self, decision: str) -> None:
+        self.display = False
+        resolver, self._resolver = self._resolver, None
+        if resolver is not None:
+            resolver(decision)
+
+
 class HarnessApp(App):
     CSS = """
     #log { height: 1fr; padding: 0 1; }
     #log > * { width: 1fr; height: auto; }
     #status { height: 1; padding: 0 1; color: $text-muted; background: $panel; }
-    #prompt { dock: bottom; height: 5; margin-bottom: 1; border: none;
+    #bottom { dock: bottom; height: auto; margin-bottom: 1; }
+    #prompt { height: 5; border: none;
               border-top: tall $warning; border-bottom: tall $warning; padding: 1 1; }
     #prompt:focus { border: none; border-top: tall $warning; border-bottom: tall $warning; }
+    #perm { height: auto; padding: 0 1; margin-top: 1; display: none;
+            border: round $warning; }
+    #perm:focus { border: round $warning; }
+    #ac { height: auto; max-height: 10; padding: 0 1; display: none;
+          background: $panel; border: round $primary; }
+    #mode-hint { height: 1; padding: 0 1; color: $text-muted; }
     """
 
     BINDINGS = [
@@ -104,6 +271,15 @@ class HarnessApp(App):
         ("escape", "interrupt", "stop"),
         ("ctrl+d", "quit", "quit"),
         ("ctrl+l", "clear_log", "clear"),
+        Binding("shift+tab", "toggle_mode", "auto/manual", priority=True),
+        # Keyboard scrolling of the history — mouse capture is off (so drag-select
+        # + copy work), which also disables wheel scroll, so these stand in for it.
+        Binding("pageup", "scroll_log('page_up')", "scroll up", show=False),
+        Binding("pagedown", "scroll_log('page_down')", "scroll down", show=False),
+        Binding("ctrl+up", "scroll_log('up')", show=False),
+        Binding("ctrl+down", "scroll_log('down')", show=False),
+        Binding("ctrl+home", "scroll_log('home')", show=False),
+        Binding("ctrl+end", "scroll_log('end')", show=False),
     ]
 
     SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
@@ -138,6 +314,10 @@ class HarnessApp(App):
         self._last_answer = ""  # for /copy
         self._cancel = False  # set by ctrl+c to stop the running turn
         self._pending: list[str] = []  # buffered lines of a backslash-continued message
+        self._root = Path(os.getcwd())  # workspace root for @mentions (refined at mount)
+        self._ac_open = False  # @file dropdown visible?
+        self._ac_matches: list[str] = []  # current dropdown entries (completed rel paths)
+        self._ac_sel = 0  # highlighted index in the dropdown
         saved_theme = prefs.load()["theme"]
         if saved_theme and saved_theme in self.available_themes:
             self.theme = saved_theme
@@ -151,11 +331,24 @@ class HarnessApp(App):
         yield Header(show_clock=False)
         yield VerticalScroll(id="log")
         yield Static("", id="status")
-        yield PromptInput(placeholder="Message…   (/help · ↑ history · ctrl+c stop)", id="prompt")
+        with Vertical(id="bottom"):
+            yield Static("", id="ac")  # @file match dropdown, above the input
+            yield PromptInput(placeholder="Message…   (/help · @file · ↑ history · ctrl+c stop)", id="prompt")
+            yield PermissionBar(id="perm")
+            yield Static("", id="mode-hint")
 
     def on_mount(self) -> None:
         self.title = "harness"
+        # Manual mode asks before each side-effecting tool call; the asker blocks
+        # the turn's worker thread while an inline bar below the input collects
+        # the y/a/n answer on the UI thread.
+        self.harness.permissions.asker = self._ask_permission
+        # @file mentions and /commands complete against the workspace root (the
+        # folder chat was launched in, same as Bash/Write/Edit resolve against).
+        self._root = Path(getattr(self.harness.sandbox, "workspace", None) or os.getcwd())
+        self.query_one("#prompt", PromptInput).suggester = InputSuggester(_SLASH_NAMES)
         self.sub_title = self.external_id
+        self._refresh_mode_hint()
         self._write(ui.welcome_renderable(
             version=_version(),
             user=self.external_id,
@@ -204,9 +397,69 @@ class HarnessApp(App):
             )
         )
 
+    # -- @file autocomplete dropdown ---------------------------------------
+    @on(Input.Changed, "#prompt")
+    def _on_input_changed(self, event: Input.Changed) -> None:
+        self._ac_update(event.value)
+
+    def _ac_update(self, value: str) -> None:
+        """Recompute the @file dropdown from the current input value."""
+        partial = _mention_partial(value)
+        matches = _list_path_matches(self._root, partial) if partial is not None else []
+        if not matches:
+            self._ac_close()
+            return
+        self._ac_matches = matches
+        self._ac_sel = min(self._ac_sel, len(matches) - 1) if self._ac_open else 0
+        self._ac_open = True
+        self._render_ac()
+
+    def _render_ac(self) -> None:
+        text = Text()
+        for i, m in enumerate(self._ac_matches):
+            text.append(f"@{m}\n", style="reverse" if i == self._ac_sel else "")
+        self.query_one("#ac", Static).update(text)
+        self.query_one("#ac", Static).display = True
+
+    def _ac_close(self) -> None:
+        if self._ac_open or self.query_one("#ac", Static).display:
+            self._ac_open = False
+            self._ac_matches = []
+            self._ac_sel = 0
+            self.query_one("#ac", Static).display = False
+
+    def _ac_move(self, delta: int) -> None:
+        if self._ac_open and self._ac_matches:
+            self._ac_sel = (self._ac_sel + delta) % len(self._ac_matches)
+            self._render_ac()
+
+    def _ac_accept(self) -> bool:
+        """Replace the active @token with the highlighted match. Returns True if
+        it consumed the key. A directory keeps the dropdown open (drill in); a
+        file inserts it plus a trailing space and closes the dropdown."""
+        if not self._ac_open or not self._ac_matches:
+            return False
+        inp = self.query_one("#prompt", PromptInput)
+        head = inp.value.rpartition(" ")[0]
+        prefix = f"{head} " if head else ""
+        chosen = self._ac_matches[self._ac_sel]
+        if chosen.endswith("/"):
+            inp.value = f"{prefix}@{chosen}"
+            inp.cursor_position = len(inp.value)
+            self._ac_update(inp.value)  # list the directory's contents
+        else:
+            inp.value = f"{prefix}@{chosen} "
+            inp.cursor_position = len(inp.value)
+            self._ac_close()
+        return True
+
     # -- input --------------------------------------------------------------
     @on(Input.Submitted, "#prompt")
     def _submit(self, event: Input.Submitted) -> None:
+        # Enter picks the highlighted @file match when the dropdown is open,
+        # rather than sending the message (the input keeps the completed value).
+        if self._ac_open and self._ac_accept():
+            return
         raw = event.value
         event.input.value = ""
         # multi-line: a trailing backslash buffers the line and waits for more
@@ -234,12 +487,50 @@ class HarnessApp(App):
     def _begin_turn(self, msg: str) -> None:
         self._busy = True
         self._cancel = False
-        self._last_user = msg
+        self._last_user = msg  # raw text (with @mentions) — re-expanded on /retry
         self._answer = []
+        # Inline any @file mentions so the model sees their contents; the log
+        # keeps showing your original text (already written by the caller).
+        sent, attached = self._expand_mentions(msg)
+        if attached:
+            self._write(ui.info_line("attached " + ", ".join(attached)))
         self._label = "thinking…"
         self.query_one("#prompt", Input).disabled = True
         self._refresh_status()
-        self._run_turn(msg)
+        self._run_turn(sent)
+
+    def _expand_mentions(self, msg: str) -> tuple[str, list[str]]:
+        """Inline @path mentions as context appended to the message. A file adds
+        its contents; a directory adds every file under it (recursively, pruning
+        ignore-listed dirs, capped at `_MENTION_MAX_FILES`). Returns (message_to_
+        send, attached_paths); non-file/unreadable mentions stay as plain text."""
+        root = getattr(self, "_root", None) or Path(os.getcwd())
+        blocks: list[str] = []
+        attached: list[str] = []
+
+        def add_file(rel: str) -> None:
+            if rel in attached:
+                return
+            try:
+                text = (root / rel).read_text(errors="replace")
+            except OSError:
+                return
+            if len(text) > _MENTION_MAX_BYTES:
+                text = text[:_MENTION_MAX_BYTES] + "\n… [truncated]"
+            blocks.append(f'<file path="{rel}">\n{text}\n</file>')
+            attached.append(rel)
+
+        for raw in re.findall(r"@(\S+)", msg):
+            rel = raw.rstrip(".,;:!?)]}").rstrip("/")  # trim trailing punctuation / slash
+            path = root / rel
+            if path.is_dir():
+                for f in _collect_dir_files(path, root):
+                    add_file(f)
+            elif path.is_file():
+                add_file(rel)
+        if not blocks:
+            return msg, []
+        return msg + "\n\n" + "\n".join(blocks), attached
 
     @work(thread=True, exclusive=True, group="turn")
     def _run_turn(self, msg: str) -> None:
@@ -298,8 +589,51 @@ class HarnessApp(App):
         inp.focus()
         self._refresh_status()
 
+    # -- permission mode ----------------------------------------------------
+    def _refresh_mode_hint(self) -> None:
+        """Persistent indicator line under the input (Claude-Code style)."""
+        if self.harness.permissions.mode == "manual":
+            text = "[] manual mode · approve each tool  (shift+tab to cycle)"
+        else:
+            text = ">> auto mode · run all tools  (shift+tab to cycle)"
+        self.query_one("#mode-hint", Static).update(text)
+
+    def _set_mode(self, mode: str) -> None:
+        mode = self.harness.permissions.set_mode(mode)
+        prefs.save(permission_mode=mode)
+        self._refresh_mode_hint()
+
+    def action_toggle_mode(self) -> None:
+        """shift+tab: flip auto <-> manual, reflected in the bottom hint line."""
+        self._set_mode("manual" if self.harness.permissions.mode == "auto" else "auto")
+
+    def _ask_permission(self, name: str, args: dict) -> str:
+        """Called from the turn worker thread. Reveal the inline permission bar
+        below the input on the UI thread and block until the user answers, then
+        return ALLOW / ALWAYS / DENY and hand focus back to the input."""
+        display = ui.tool_display_name(name, args)
+        summary = ui.tool_args_str(name, args)
+        event = threading.Event()
+        box = {"decision": DENY}
+
+        def show() -> None:
+            def resolver(decision: str | None) -> None:
+                box["decision"] = decision or DENY
+                self.query_one("#prompt", Input).focus()
+                event.set()
+
+            self.query_one("#perm", PermissionBar).ask(display, summary, resolver)
+
+        self.call_from_thread(show)
+        event.wait()
+        return box["decision"]
+
     def action_interrupt(self) -> None:
-        """Ctrl+C / Esc: stop the running turn if busy, else quit the app."""
+        """Ctrl+C / Esc: dismiss the @file dropdown first, else stop a running
+        turn, else quit the app."""
+        if self._ac_open:
+            self._ac_close()
+            return
         if self._busy:
             self._cancel = True
             self._label = "stopping…"
@@ -348,6 +682,12 @@ class HarnessApp(App):
             self._budget(args)
         elif cmd == "/theme":
             self._theme(args)
+        elif cmd in ("/auto", "/manual"):
+            self._set_mode(cmd[1:])
+        elif cmd == "/mode":
+            self._write(ui.info_line(
+                f"permission mode: {self.harness.permissions.mode}  (/auto · /manual · shift+tab)"
+            ))
         elif cmd == "/mcp":
             self._mcp(args)
         elif cmd == "/new":
@@ -415,9 +755,19 @@ class HarnessApp(App):
             default = prefs.load()["model"] or self.harness.cfg.provider.model
             self._write(ui.info_line(f"model: {self.session.model}  (default: {default})"))
         else:
-            self.harness.set_session_model(self.session, args[0])
-            prefs.save(model=args[0])
-            self._write(ui.info_line(f"model set to '{args[0]}' for this session and saved as the default"))
+            model = args[0]
+            available = self.harness.provider.available_models()
+            if available is not None and model not in available:
+                import difflib
+
+                near = difflib.get_close_matches(model, available, n=3, cutoff=0.4)
+                near += [m for m in available if model.lower() in m.lower() and m not in near]
+                hint = f"  did you mean: {', '.join(near[:3])}?" if near else ""
+                self._write(ui.tool_result_renderable(f"unknown model '{model}' — not saved.{hint}", is_error=True))
+                return
+            self.harness.set_session_model(self.session, model)
+            prefs.save(model=model)
+            self._write(ui.info_line(f"model set to '{model}' for this session and saved as the default"))
             self._refresh_status()
 
     def _budget(self, args: list[str]) -> None:
@@ -453,8 +803,10 @@ class HarnessApp(App):
         if not self._last_answer:
             self._write(ui.info_line("no answer to copy yet"))
             return
-        self.copy_to_clipboard(self._last_answer)  # Textual OSC-52 clipboard
-        self._write(ui.info_line(f"copied {len(self._last_answer)} chars to the clipboard"))
+        self.copy_to_clipboard(self._last_answer)  # OSC-52; may be a no-op in some terminals
+        via = _os_clipboard_write(self._last_answer)  # local tool (pbcopy/xclip/…) is reliable
+        note = "" if via is None else f" (via {via})"
+        self._write(ui.info_line(f"copied {len(self._last_answer)} chars to the clipboard{note}"))
 
     def _save(self, path: str) -> None:
         from pathlib import Path
@@ -491,6 +843,19 @@ class HarnessApp(App):
     def action_clear_log(self) -> None:
         self.query_one("#log", VerticalScroll).remove_children()
 
+    def action_scroll_log(self, how: str) -> None:
+        """Scroll the message history from the keyboard (PgUp/PgDn, Ctrl+↑/↓,
+        Ctrl+Home/End) — stands in for the wheel, which needs mouse capture."""
+        log = self.query_one("#log", VerticalScroll)
+        {
+            "page_up": log.scroll_page_up,
+            "page_down": log.scroll_page_down,
+            "up": log.scroll_up,
+            "down": log.scroll_down,
+            "home": log.scroll_home,
+            "end": log.scroll_end,
+        }[how](animate=False)
+
 
 def _version() -> str:
     from .. import __version__
@@ -507,5 +872,9 @@ def _backend(harness: Any) -> str:
 def run_tui(
     harness: Any, session: Any, external_id: str, provider_label: str, model: str, mcp_lines: list[tuple]
 ) -> int:
-    HarnessApp(harness, session, external_id, provider_label, model, mcp_lines).run()
+    # mouse=False stops Textual from emitting the mouse-tracking escape codes
+    # (\x1b[?1000h etc.). Without them the terminal keeps native text selection,
+    # so drag-to-select + Cmd/Ctrl+C work like a normal shell (and like Claude
+    # Code). Trade-off: no mouse-wheel scroll — use PageUp/PageDown/arrows.
+    HarnessApp(harness, session, external_id, provider_label, model, mcp_lines).run(mouse=False)
     return 0
