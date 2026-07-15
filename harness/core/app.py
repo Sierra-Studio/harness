@@ -69,8 +69,8 @@ class Harness:
                 `ToolProvider` (capability modules — a sandbox, an MCP server,
                 a bundle of domain tools) items, installed in order.
                 `None` (the default) means all built-ins (`default_tools()`);
-                `False` (or `[]`) means nothing at all; a list means exactly
-                those. Each `ToolProvider` is `register()`-ed BEFORE the
+                `True` is the same as `None`; `False` (or `[]`) means nothing
+                at all; a list means exactly those. Each `ToolProvider` is `register()`-ed BEFORE the
                 prompt is assembled (so its tools/guidance are advertised to
                 the model this turn) and `stop()`-ped by `close()`.
             hooks: List of `Hook` objects. Each hook's lifecycle methods
@@ -309,7 +309,7 @@ class Harness:
                 self.observer.log(None, None, "provider_stop_error", {"error": str(e)})
 
     # ---- MCP wiring: index a server's tools and enable dispatch ----
-    def _connect_mcp(self, client, transport: str, expose: str) -> int:
+    def _connect_mcp(self, client, transport: str, expose: Literal["index", "direct"]) -> int:
         """Shared MCP hookup, delegating the actual wiring to ProviderHost.add_mcp
         (the single source of truth). `expose="index"` (default) keeps the
         discovery model; `expose="direct"` registers each tool as a first-class

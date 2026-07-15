@@ -9,9 +9,6 @@ from __future__ import annotations
 
 import json
 import os
-import sys
-
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from rich.console import Console
 
@@ -20,9 +17,10 @@ from harness.interfaces import ui
 
 def _render(renderable) -> str:
     """Render to plain text so we can assert on visible content."""
-    con = Console(width=80, file=open(os.devnull, "w"), record=True)
-    con.print(renderable)
-    return con.export_text()
+    with open(os.devnull, "w") as devnull:
+        con = Console(width=80, file=devnull, record=True)
+        con.print(renderable)
+        return con.export_text()
 
 
 def test_tool_display_name_unwraps_calltool():
@@ -219,9 +217,9 @@ def test_keyboard_scrolls_log_without_stealing_input_focus():
     from textual.containers import VerticalScroll
 
     from harness.core import Harness
+    from harness.interfaces.tui import HarnessApp
     from harness.llm.provider import FakeProvider
     from harness.settings import Config
-    from harness.interfaces.tui import HarnessApp
 
     async def scenario():
         h = Harness(

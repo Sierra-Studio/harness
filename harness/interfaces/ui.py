@@ -253,10 +253,21 @@ def logo_renderable(width: int = 22, path: str | Path | None = None) -> Renderab
         return None
 
     img = Image.open(p).convert("RGBA")
+
+    def pget(access: Any, x: int, y: int) -> tuple[int, ...]:
+        """Typed pixel read: typeshed types `load()` pixels as float|tuple
+        (mode-dependent), but after convert("RGBA") every pixel is a 4-tuple."""
+        return access[x, y]
+
     # work at a modest size for the mask math; sample bg from the corners
     work = img.resize((120, max(1, round(img.height * 120 / img.width))), Image.Resampling.BOX)
     wpx = work.load()
-    corners = [wpx[0, 0], wpx[work.width - 1, 0], wpx[0, work.height - 1], wpx[work.width - 1, work.height - 1]]
+    corners = [
+        pget(wpx, 0, 0),
+        pget(wpx, work.width - 1, 0),
+        pget(wpx, 0, work.height - 1),
+        pget(wpx, work.width - 1, work.height - 1),
+    ]
     bg = tuple(sum(c[i] for c in corners) / 4 for i in range(3))
 
     def visible(pix: tuple) -> bool:
@@ -268,9 +279,10 @@ def logo_renderable(width: int = 22, path: str | Path | None = None) -> Renderab
     # crop to the bounding box of the actual mark (drop the flat margins)
     mask = Image.new("L", work.size, 0)
     mpx = mask.load()
+    assert mpx is not None  # a freshly created image always has pixel access
     for y in range(work.height):
         for x in range(work.width):
-            if visible(wpx[x, y]):
+            if visible(pget(wpx, x, y)):
                 mpx[x, y] = 255
     bbox = mask.getbbox()
     if bbox:
@@ -283,7 +295,7 @@ def logo_renderable(width: int = 22, path: str | Path | None = None) -> Renderab
     t = Text()
     for y in range(0, rows, 2):
         for x in range(width):
-            top, bot = px[x, y], px[x, y + 1]
+            top, bot = pget(px, x, y), pget(px, x, y + 1)
             tv, bv = visible(top), visible(bot)
             if not tv and not bv:
                 t.append(" ")

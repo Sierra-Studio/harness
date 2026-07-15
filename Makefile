@@ -83,6 +83,14 @@ demo: ## Offline demo — no DB, no API key (in-memory repo + fake provider)
 test: ## Run the test suite
 	$(UV) run pytest -q
 
+.PHONY: cov
+cov: ## Run the test suite with a line-coverage report
+	$(UV) run pytest -q --cov=harness --cov-report=term-missing
+
+.PHONY: test-db
+test-db: ## Run the Repository contract tests against Postgres (needs 'make db-up' first)
+	TEST_DATABASE_URL=postgresql://harness:harness@localhost:5433/harness $(UV) run pytest -q -m integration
+
 .PHONY: lint
 lint: ## Lint with ruff
 	$(UV) run ruff check harness tests
@@ -97,6 +105,10 @@ typecheck: ## Type-check with mypy
 
 .PHONY: check
 check: lint typecheck test ## Lint + typecheck + test
+
+.PHONY: check-all
+check-all: lint typecheck db-up ## Everything: lint + typecheck + full suite incl. Postgres contract tests
+	TEST_DATABASE_URL=postgresql://harness:harness@localhost:5433/harness $(UV) run pytest -q
 
 .PHONY: docs
 docs: ## Serve docs locally (http://127.0.0.1:8000)

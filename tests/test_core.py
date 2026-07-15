@@ -1,29 +1,16 @@
-"""Core unit tests — run with: python3 -m pytest -q  (or python3 tests/test_core.py)."""
+"""Core unit tests — run with: python3 -m pytest -q."""
 
 from __future__ import annotations
 
 import dataclasses
-import os
-import sys
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from helpers import drain as _drain
+from helpers import make_harness as _harness
 
 from harness.core import Harness
 from harness.llm.provider import FakeProvider
 from harness.llm.tokenizer import count_tokens
 from harness.settings import Config, LoopConfig, MemoryConfig
-
-
-def _harness(provider, *, loop=None, memory=None, **overrides):
-    # force in-memory repo so tests never depend on ambient .env / DATABASE_URL
-    cfg = dataclasses.replace(
-        Config(),
-        database_url="",
-        loop=loop or LoopConfig(),
-        memory=memory or MemoryConfig(),
-        **overrides,
-    )
-    return Harness(cfg, system_prompt="sys.", provider=provider)
 
 
 def test_tokenizer_monotonic():
@@ -463,23 +450,17 @@ def test_search_tools_keyword_match():
     assert "read_file" not in out["content"]  # keyword search excludes non-matches
 
 
-def test_mcp_http_servers_config():
-    import os
-
+def test_mcp_http_servers_config(monkeypatch):
     from harness.settings import mcp_http_servers
 
-    os.environ["MCP_HTTP_SERVERS"] = "fellow=https://fellow.app/mcp, other=https://x/mcp"
-    os.environ["MCP_FELLOW_TOKEN"] = "tok123"
-    os.environ.pop("MCP_OTHER_TOKEN", None)
-    try:
-        servers = mcp_http_servers()
-        by_name = {s["name"]: s for s in servers}
-        assert by_name["fellow"]["url"] == "https://fellow.app/mcp"
-        assert by_name["fellow"]["headers"]["Authorization"] == "Bearer tok123"
-        assert by_name["other"]["headers"] == {}  # no token -> no auth header
-    finally:
-        os.environ.pop("MCP_HTTP_SERVERS", None)
-        os.environ.pop("MCP_FELLOW_TOKEN", None)
+    monkeypatch.setenv("MCP_HTTP_SERVERS", "fellow=https://fellow.app/mcp, other=https://x/mcp")
+    monkeypatch.setenv("MCP_FELLOW_TOKEN", "tok123")
+    monkeypatch.delenv("MCP_OTHER_TOKEN", raising=False)
+    servers = mcp_http_servers()
+    by_name = {s["name"]: s for s in servers}
+    assert by_name["fellow"]["url"] == "https://fellow.app/mcp"
+    assert by_name["fellow"]["headers"]["Authorization"] == "Bearer tok123"
+    assert by_name["other"]["headers"] == {}  # no token -> no auth header
 
 
 def test_oauth_pkce_and_helpers():
@@ -681,16 +662,6 @@ def test_http_mcp_call_via_stub_transport():
 # --------------------------------------------------------------------------
 
 
-def _drain(gen):
-    """Consume a stream() generator: return (deltas, final ModelResult)."""
-    deltas = []
-    while True:
-        try:
-            deltas.append(next(gen))
-        except StopIteration as stop:
-            return deltas, stop.value
-
-
 def test_fake_stream_matches_complete():
     """FakeProvider.stream deltas concatenate to the full content and its
     ModelResult tokens match complete() (so run_turn's TurnResult is unchanged)."""
@@ -857,6 +828,14 @@ def test_no_tools_via_false_or_empty():
     """None => all built-ins; False or [] => no tools at all."""
     assert _spec_names(_htools(tools=False)) == []
     assert _spec_names(_htools(tools=[])) == []
+
+
+def test_tools_true_means_all_builtins():
+    """tools=True == tools=None (all built-ins). Pinned because the annotation
+    accepts bool: before this was handled, True type-checked but crashed."""
+    from harness.tools.builtin import default_tools
+
+    assert set(_spec_names(_htools(tools=True))) == {t.name for t in default_tools()}
 
 
 def test_tools_list_is_the_selection():
@@ -1319,20 +1298,3 @@ def test_azure_stream_reuses_openai_base():
     assert tc["function"]["arguments"] == '{"command": "ls"}'
     assert res.tokens_in == 11 and res.tokens_out == 7
     assert captured["params"] == {"api-version": "2024-10-21"}
-
-
-if __name__ == "__main__":
-    import traceback
-
-    fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
-    failed = 0
-    for fn in fns:
-        try:
-            fn()
-            print(f"PASS {fn.__name__}")
-        except Exception:
-            failed += 1
-            print(f"FAIL {fn.__name__}")
-            traceback.print_exc()
-    print(f"\n{len(fns) - failed}/{len(fns)} passed")
-    sys.exit(1 if failed else 0)

@@ -570,6 +570,7 @@ class ToolRegistry:
     Ordering matters: items are installed in list order, which is also the
     prompt-guidance order. `tools` sentinel values:
       * None (default) -> all built-ins (`default_tools()`), no providers
+      * True            -> same as None (all built-ins)
       * False (or [])  -> nothing at all
       * a list          -> exactly those items, in order
     Names not in the map are treated as external MCP index tools and dispatched
@@ -594,8 +595,10 @@ class ToolRegistry:
         self.skills = skills
         self.tools: dict[str, Tool] = {}
         self.providers: list[ToolProvider] = []  # successfully registered, for close()
-        # None -> all built-ins; False/[] (any falsy non-None) -> none; else exactly given.
-        if tools is None:
+        # None/True -> all built-ins; False/[] -> none; else exactly the given list.
+        # True is accepted so the bool half of the annotation is total — without
+        # it, tools=True type-checks but crashes iterating over a bool.
+        if tools is None or tools is True:
             resolved: Iterable = default_tools()
         elif not tools:
             resolved = []

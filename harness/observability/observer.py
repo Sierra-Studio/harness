@@ -14,7 +14,7 @@ from __future__ import annotations
 import logging
 import time
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import AbstractContextManager, contextmanager
 from typing import Any
 
 from ..persistence import Repository
@@ -28,7 +28,7 @@ class Tracer:
     (`NullTracer`, an alias for this class) is itself a valid, useful value.
     """
 
-    def span(self, name: str, **attributes: Any) -> Iterator[dict]:
+    def span(self, name: str, **attributes: Any) -> AbstractContextManager[dict]:
         """Context manager for one unit of work (a model call, a tool call,
         memory summarization, skill induction, ...). Must be a context
         manager yielding a mutable mapping the caller may add attributes to

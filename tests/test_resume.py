@@ -7,28 +7,11 @@ re-emit the call (no replay). These tests pin that behaviour.
 
 from __future__ import annotations
 
-import dataclasses
-import os
-import sys
-
 import pytest
+from helpers import make_harness as _harness
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-from harness.core import Harness
 from harness.llm.provider import FakeProvider
-from harness.settings import Config, LoopConfig, MemoryConfig, PermissionConfig
-
-
-def _harness(provider, *, loop=None, **overrides):
-    cfg = dataclasses.replace(
-        Config(),
-        database_url="",
-        loop=loop or LoopConfig(),
-        memory=MemoryConfig(),
-        **overrides,
-    )
-    return Harness(cfg, system_prompt="sys.", provider=provider)
+from harness.settings import PermissionConfig
 
 
 def _suspended_seed(cmd="echo xyz"):

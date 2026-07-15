@@ -14,6 +14,11 @@ from __future__ import annotations
 
 import abc
 
+# These classes define a method named `list`, which shadows the builtin inside
+# the class bodies — annotations there must say `builtins.list` explicitly or
+# mypy resolves them to the method and stops type-checking the whole seam.
+import builtins
+
 from ..llm import Provider
 from ..models import Session, Skill
 from ..observability import Observer
@@ -26,10 +31,10 @@ class Skills(abc.ABC):
     GetSkill tools, and the per-user prompt catalog."""
 
     @abc.abstractmethod
-    def list(self, user_id: str) -> list[Skill]: ...
+    def list(self, user_id: str) -> builtins.list[Skill]: ...
 
     @abc.abstractmethod
-    def search(self, user_id: str, query: str, k: int) -> list[Skill]: ...
+    def search(self, user_id: str, query: str, k: int) -> builtins.list[Skill]: ...
 
     @abc.abstractmethod
     def get(self, user_id: str, name: str) -> Skill | None: ...
@@ -38,7 +43,7 @@ class Skills(abc.ABC):
     def add(self, user_id: str, name: str, summary: str, body: str, origin: str) -> Skill: ...
 
     @abc.abstractmethod
-    def on_session_closed(self, session: Session) -> list[str]:
+    def on_session_closed(self, session: Session) -> builtins.list[str]:
         """Called by `Harness.close_session`. Returns the names of any newly
         induced skills; a no-op implementation just returns `[]`."""
 
@@ -52,10 +57,10 @@ class NullSkills(Skills):
     to the `Bash` tool.
     """
 
-    def list(self, user_id: str) -> list[Skill]:
+    def list(self, user_id: str) -> builtins.list[Skill]:
         return []
 
-    def search(self, user_id: str, query: str, k: int) -> list[Skill]:
+    def search(self, user_id: str, query: str, k: int) -> builtins.list[Skill]:
         return []
 
     def get(self, user_id: str, name: str) -> Skill | None:
@@ -67,7 +72,7 @@ class NullSkills(Skills):
             "(e.g. RepositorySkills) to persist one."
         )
 
-    def on_session_closed(self, session: Session) -> list[str]:
+    def on_session_closed(self, session: Session) -> builtins.list[str]:
         return []
 
 
@@ -84,10 +89,10 @@ class RepositorySkills(Skills):
         self.cfg = cfg
         self.observer = observer
 
-    def list(self, user_id: str) -> list[Skill]:
+    def list(self, user_id: str) -> builtins.list[Skill]:
         return self.repo.list_skills(user_id)
 
-    def search(self, user_id: str, query: str, k: int) -> list[Skill]:
+    def search(self, user_id: str, query: str, k: int) -> builtins.list[Skill]:
         return self.repo.search_skills(user_id, query, k)
 
     def get(self, user_id: str, name: str) -> Skill | None:
@@ -96,7 +101,7 @@ class RepositorySkills(Skills):
     def add(self, user_id: str, name: str, summary: str, body: str, origin: str) -> Skill:
         return self.repo.add_skill(user_id, name, summary, body, origin)
 
-    def on_session_closed(self, session: Session) -> list[str]:
+    def on_session_closed(self, session: Session) -> builtins.list[str]:
         """Trigger induction when the user hits a multiple of the cadence.
         Returns the names of any newly created skills."""
         user_id = session.user_id

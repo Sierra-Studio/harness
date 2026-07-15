@@ -2,11 +2,7 @@
 
 from __future__ import annotations
 
-import dataclasses
-import os
-import sys
-
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from helpers import make_cfg as _cfg
 
 from harness.core import Harness
 from harness.llm.provider import FakeProvider
@@ -14,12 +10,7 @@ from harness.memory.skills import NullSkills, RepositorySkills, Skills
 from harness.models import Skill
 from harness.observability.observer import LoggingTracer, NullTracer, Observer, Tracer
 from harness.persistence.repository import InMemoryRepository
-from harness.settings import Config, MemoryConfig
-
-
-def _cfg(**overrides):
-    return dataclasses.replace(Config(), database_url="", **overrides)
-
+from harness.settings import MemoryConfig
 
 # --------------------------------------------------------------------------
 # Skills DI

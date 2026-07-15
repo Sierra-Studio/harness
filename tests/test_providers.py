@@ -3,10 +3,8 @@
 from __future__ import annotations
 
 import dataclasses
-import os
-import sys
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from helpers import make_harness
 
 from harness.core import Harness
 from harness.llm.provider import FakeProvider
@@ -16,10 +14,7 @@ from harness.tools.capabilities import ProviderHost, ToolBundle, ToolProvider
 
 
 def _harness(providers, **overrides):
-    cfg = dataclasses.replace(Config(), database_url="", **overrides)
-    return Harness(
-        cfg, system_prompt="sys.", provider=FakeProvider(context_window=4000), tools=providers
-    )
+    return make_harness(tools=providers, **overrides)
 
 
 def _tool(name):
@@ -67,7 +62,7 @@ class _BoomOptional(_Boom):
 def test_required_provider_failure_aborts_construction():
     try:
         _harness([_Boom()])
-        assert False, "expected construction to raise"
+        raise AssertionError("expected construction to raise")
     except RuntimeError as e:
         assert "cannot connect" in str(e)
 

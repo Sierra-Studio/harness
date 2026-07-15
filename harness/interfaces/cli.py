@@ -29,7 +29,9 @@ import contextlib
 import os
 import re
 import sys
+from collections.abc import Callable
 from pathlib import Path
+from typing import Literal
 
 with contextlib.suppress(ImportError):
     # Loading readline transparently gives the plain REPL's input() line editing
@@ -142,7 +144,7 @@ def _mcp_http(h: Harness, args: list[str]) -> None:
     direct = "--direct" in args
     args = [a for a in args if a != "--direct"]
     url, name = args[0], (args[1] if len(args) > 1 else "")
-    expose = "direct" if direct else "index"
+    expose: Literal["index", "direct"] = "direct" if direct else "index"
     try:
         client = h.add_mcp_http(url, name, expose=expose)
         mcpstore.save(client.name, url, expose)  # persist so it reconnects next launch
@@ -406,7 +408,13 @@ def _connect_mcp(h: Harness) -> list[tuple]:
     results: list[tuple] = []
     seen: set[str] = set()
 
-    def connect(name: str, url: str, headers=None, oauth=None, expose: str = "index") -> None:
+    def connect(
+        name: str,
+        url: str,
+        headers=None,
+        oauth=None,
+        expose: Literal["index", "direct"] = "index",
+    ) -> None:
         key = name or url
         if key in seen:
             return
@@ -420,7 +428,13 @@ def _connect_mcp(h: Harness) -> list[tuple]:
     for srv in mcp_http_servers():
         connect(srv["name"], srv["url"], srv["headers"], srv.get("oauth"))
     for srv in mcpstore.load():
-        connect(srv.get("name", ""), srv["url"], expose=srv.get("expose", "index"))
+        # sanitize at the boundary: the store is a hand-editable JSON file, so
+        # anything that isn't exactly "direct" falls back to the safe default
+        connect(
+            srv.get("name", ""),
+            srv["url"],
+            expose="direct" if srv.get("expose") == "direct" else "index",
+        )
     return results
 
 
@@ -448,7 +462,7 @@ def chat(argv: list[str]) -> int:
     )
     plain = "--plain" in argv or not (sys.stdout.isatty() and sys.stdin.isatty())
 
-    run_tui = None
+    run_tui: Callable[..., int] | None = None
     if not plain:
         try:
             from .tui import run_tui

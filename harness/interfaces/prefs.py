@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import os
+from collections.abc import Set as AbstractSet
 from pathlib import Path
 from typing import Any
 
@@ -50,7 +51,7 @@ def save(**updates: Any) -> None:
     STORE.write_text(json.dumps(current, indent=2))
 
 
-def apply_defaults(cfg: Any, *, from_dotenv: set[str] = frozenset()) -> Any:
+def apply_defaults(cfg: Any, *, from_dotenv: AbstractSet[str] = frozenset()) -> Any:
     """Layer saved preferences onto `cfg` as defaults. Precedence: a real
     shell env var always wins over a saved preference (matching
     `Config.from_env`'s own "env is explicit, opt-in" rule); a saved

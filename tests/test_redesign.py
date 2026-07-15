@@ -5,22 +5,16 @@ python3 -m pytest -q.
 
 from __future__ import annotations
 
-import dataclasses
-import os
-import sys
-
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from helpers import make_cfg
 
 from harness.core import Harness
 from harness.llm.provider import FakeProvider
 from harness.persistence.repository import InMemoryRepository, PostgresRepository
-from harness.settings import Config, LoopConfig
+from harness.settings import LoopConfig
 
 
 def _cfg(**loop_overrides):
-    return dataclasses.replace(
-        Config(), database_url="", loop=LoopConfig(**loop_overrides) if loop_overrides else LoopConfig()
-    )
+    return make_cfg(loop=LoopConfig(**loop_overrides) if loop_overrides else None)
 
 
 def test_harness_requires_provider():

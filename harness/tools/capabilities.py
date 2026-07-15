@@ -78,7 +78,7 @@ class ToolProvider(abc.ABC):
     @abc.abstractmethod
     def register(self, host: ProviderHost) -> None: ...
 
-    def stop(self) -> None:
+    def stop(self) -> None:  # noqa: B027 - deliberately a no-op default, not abstract
         """Release resources (connections, subprocesses). Default: nothing."""
 
 

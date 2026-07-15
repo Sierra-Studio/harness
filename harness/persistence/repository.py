@@ -460,11 +460,17 @@ class PostgresRepository(Repository):
         )
 
     def find_session(self, session_id) -> Session | None:
-        r = self._row(
-            """SELECT id,user_id,model,context_window,token_budget,tokens_spent,status
-               FROM sessions WHERE id=%s""",
-            (session_id,),
-        )
+        try:
+            r = self._row(
+                """SELECT id,user_id,model,context_window,token_budget,tokens_spent,status
+                   FROM sessions WHERE id=%s""",
+                (session_id,),
+            )
+        except self._psycopg.DataError:
+            # A malformed id (not a uuid at all) is the same "bad id" case the
+            # contract promises None for — not an exception. InMemoryRepository
+            # already behaves this way; keep both backends identical.
+            return None
         if not r:
             return None
         return Session(

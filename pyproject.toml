@@ -14,7 +14,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8.0", "ruff>=0.14", "mypy>=1.19"]
+dev = ["pytest>=8.0", "pytest-cov>=5.0", "ruff>=0.14", "mypy>=1.19"]
 # Managed-identity (Entra ID) auth for the Azure AI Foundry provider.
 # Not needed when using AZURE_AI_API_KEY.
 azure = ["azure-identity>=1.19"]
@@ -48,8 +48,17 @@ ignore = [
     "SIM117", # nested `with` in the SSE stream loop reads clearer than a merged one
 ]
 
-[tool.ruff.lint.per-file-ignores]
-"tests/*" = ["E402"]  # sys.path shim precedes imports in the test entrypoint
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "integration: exercises a real external service (Postgres via TEST_DATABASE_URL); skips itself when the service is not configured",
+]
+
+[tool.coverage.run]
+source = ["harness"]
+
+[tool.coverage.report]
+show_missing = true
 
 [tool.mypy]
 python_version = "3.10"
