@@ -6,7 +6,8 @@ clients), contributes one or more tools, and tears itself down. Every capability
 — a sandbox, an MCP server, a bundle of domain tools — is the SAME kind of thing,
 added the SAME way, with the SAME lifecycle:
 
-    Harness(cfg, providers=[
+    Harness(cfg, provider=llm, tools=[
+        *default_tools(),
         DomainTools(...),                          # app-supplied bundle
         McpServer(sandbox_url, "sandbox", expose="direct"),
         McpServer(jira_url, "jira", expose="index"),

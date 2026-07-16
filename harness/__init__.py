@@ -27,6 +27,7 @@ from .tools import (
     ToolProvider,
     default_tools,
     make_tool,
+    tool,
 )
 
 __all__ = [
@@ -44,6 +45,7 @@ __all__ = [
     "ToolContext",
     "default_tools",
     "make_tool",
+    "tool",
     "SearchTools",
     "GetTools",
     "CallTool",

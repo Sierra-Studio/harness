@@ -27,6 +27,7 @@ from .capabilities import (
     ToolBundle,
     ToolProvider,
 )
+from .decorator import FunctionTool, tool
 from .sandbox import ExecResult, LocalSubprocessSandbox, SandboxBackend
 
 __all__ = [
@@ -34,6 +35,8 @@ __all__ = [
     "ToolContext",
     "ToolRegistry",
     "make_tool",
+    "tool",
+    "FunctionTool",
     "call_index_tool",
     "default_tools",
     "SearchTools",

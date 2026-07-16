@@ -16,8 +16,8 @@ single wiring point.
 | **Loop** | `perceive → build context → call model → run tools → repeat`, with a per-session **token-budget guard** that stops and returns the partial reply. |
 | **Memory** | Window = `system prompt + chained summary + active turns`. Budget = `context_window − system_prompt − response_reserve`. On overflow: keep the last 10% verbatim, fold the rest (plus the previous summary) into a new **chained** summary. Folded turns stay in Postgres (`in_window=false`). |
 | **Checkpoints** | Every 20 **user** turns, the subject is classified in a few words. |
-| **Tools** | Built-ins always in the prompt — `SearchTools`, `GetTools`, `CallTool`, `SearchSkills`, `GetSkill`, `Bash`. **Index Tools** (from MCP) live in `tool_index` and are reached on demand via **keyword (full-text) search in Postgres** — O(1) prompt cost regardless of how many MCP tools exist. |
-| **Skills** | Owned per user. Every 10 closed sessions, an induction pass mines recurring requests into new skills (deduped by embedding). |
+| **Tools** | Custom tools with the **`@tool` decorator** (schema inferred from type hints + docstring). Built-ins always in the prompt — `SearchTools`, `GetTools`, `CallTool`, `SearchSkills`, `GetSkill`, `Bash`. **Index Tools** (from MCP) live in `tool_index` and are reached on demand via **keyword (full-text) search in Postgres** — O(1) prompt cost regardless of how many MCP tools exist. |
+| **Skills** | Owned per user. Every 10 closed sessions, an induction pass mines recurring requests into new skills (deduped by name). |
 | **Providers (LLM)** | OpenRouter and Azure AI Foundry: model context window discovery, chat completions with tool calling, real `usage` recorded per turn, plus an offline `FakeProvider` for tests. |
 | **Providers (Tools)** | `ToolProvider` — the uniform way to compose capabilities (MCP servers, tool bundles) into a harness, each with its own lifecycle. |
 | **Observability** | One `step_logs` row per loop step; `tokens_in/out` on every model turn; live totals on the session; pluggable `Tracer` for external systems (OpenTelemetry, Datadog, ...). |
