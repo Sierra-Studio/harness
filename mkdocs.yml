@@ -83,4 +83,5 @@ nav:
   - Architecture Decisions:
       - Overview: adr/index.md
       - "ADR 0001: MCP exposure & lifecycle": adr/0001-mcp-exposure-and-runtime-lifecycle.md
+      - "ADR 0002: Decorator extension API": adr/0002-decorator-extension-api.md
   - Changelog: changelog.md
