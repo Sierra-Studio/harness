@@ -33,6 +33,29 @@ class Hook:
 `before_tool`/`after_tool` can rewrite arguments/results by returning a
 non-`None` value. Pass hooks in via `Harness(hooks=[...])`.
 
+For the common case — one function for one point — decorate a plain function
+instead of subclassing; the decorated object IS a `Hook` and stays callable:
+
+```python
+from harness import before_tool, after_tool
+
+@before_tool
+def block_rm(session, name, args):
+    if name == "Bash" and "rm -rf" in args.get("command", ""):
+        return {"command": "echo 'blocked by policy'"}   # rewrite the call
+
+@after_tool
+def redact(session, name, result):
+    return result.replace(SECRET, "***")                 # rewrite the result
+
+Harness(cfg, provider=llm, hooks=[block_rm, redact])
+```
+
+`@before_turn` and `@after_turn` work the same way (returns ignored). A
+function whose signature doesn't match the hook point fails at decoration
+time, not mid-turn. Subclass `Hook` when one object needs state shared across
+several points.
+
 ### Token-budget guard
 
 `LoopConfig.token_budget_per_session` (env `TOKEN_BUDGET_PER_SESSION`, default
