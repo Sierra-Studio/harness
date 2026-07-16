@@ -254,7 +254,7 @@ harness/
     prefs.py                      # ~/.harness/preferences.json
     mcpstore.py                    # ~/.harness/mcp_servers.json
     server.py                       # SSE HTTP server
-    assets/logo.png                 # welcome-card logo
+    assets/_logo_art.txt            # welcome-card logo
 docs/                    # MkDocs site: concepts, deployment, reference, ADRs
 examples/                # add_fellow_mcp.py, custom_tools_and_hooks.py
 tests/                   # test_core.py + provider/CLI/prefs/skills/tracer suites

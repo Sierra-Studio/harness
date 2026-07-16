@@ -10,7 +10,6 @@ dependencies = [
     "tiktoken>=0.7",        # accurate token counting (heuristic fallback exists)
     "rich>=13.7",           # CLI rendering (harness.interfaces.cli / ui)
     "textual>=0.79",        # full-screen chat TUI (harness.interfaces.tui)
-    "pillow>=10.4",         # welcome-box logo as half-block art (harness.interfaces.ui)
 ]
 
 [project.optional-dependencies]

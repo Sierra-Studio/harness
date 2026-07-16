@@ -31,12 +31,11 @@ from rich.markup import escape
 from rich.padding import Padding
 from rich.panel import Panel
 from rich.rule import Rule
-from rich.style import Style
 from rich.syntax import Syntax
 from rich.table import Table
 from rich.text import Text
 
-LOGO_PATH = Path(__file__).parent / "assets" / "logo.png"
+LOGO_ART_PATH = Path(__file__).parent / "assets" / "_logo_art.txt"
 
 # concrete colors (not console-theme names) so renderables are portable to Textual
 C_ACCENT = "cyan"
@@ -227,87 +226,24 @@ def _command_table(rows: list[tuple[str, str]]) -> Table:
 # ---------------------------------------------------------------------------
 # builders — return renderables (shared by CLI + TUI)
 # ---------------------------------------------------------------------------
-def _rgb(pixel: tuple) -> str:
-    return f"rgb({pixel[0]},{pixel[1]},{pixel[2]})"
-
-
-def logo_renderable(width: int = 22, path: str | Path | None = None) -> RenderableType | None:
-    """The bundled logo as ANSI half-block art (two pixel rows per text row via
-    "▀"). The flat background is auto-removed — the average of the four corner
-    pixels becomes a chroma key, so only the mark shows regardless of whether
-    the source PNG has a real alpha channel. Returns None if Pillow is missing,
-    the file is absent, or `HARNESS_LOGO_PATH` is set to an empty string (an
-    explicit opt-out) — the welcome box then renders without a logo.
-
-    Half-block art is used (not a terminal inline-image protocol) because it
-    composites into Rich/Textual layout and renders in every terminal."""
-    target = path if path is not None else os.environ.get("HARNESS_LOGO_PATH", LOGO_PATH)
+def logo_renderable(path: str | Path | None = None) -> RenderableType | None:
+    """Welcome-card logo from the bundled block-character art
+    (`assets/_logo_art.txt`). Point `HARNESS_LOGO_PATH` at another art file, or
+    set it to an empty string to drop the logo. Returns None when the file is
+    absent."""
+    if path is not None:
+        target: str | Path = path
+    else:
+        target = os.environ.get("HARNESS_LOGO_PATH", LOGO_ART_PATH)
     if not target:
-        return None
-    try:
-        from PIL import Image
-    except ImportError:
         return None
     p = Path(target)
     if not p.exists():
         return None
-
-    img = Image.open(p).convert("RGBA")
-
-    def pget(access: Any, x: int, y: int) -> tuple[int, ...]:
-        """Typed pixel read: typeshed types `load()` pixels as float|tuple
-        (mode-dependent), but after convert("RGBA") every pixel is a 4-tuple."""
-        return access[x, y]
-
-    # work at a modest size for the mask math; sample bg from the corners
-    work = img.resize((120, max(1, round(img.height * 120 / img.width))), Image.Resampling.BOX)
-    wpx = work.load()
-    corners = [
-        pget(wpx, 0, 0),
-        pget(wpx, work.width - 1, 0),
-        pget(wpx, 0, work.height - 1),
-        pget(wpx, work.width - 1, work.height - 1),
-    ]
-    bg = tuple(sum(c[i] for c in corners) / 4 for i in range(3))
-
-    def visible(pix: tuple) -> bool:
-        if pix[3] <= 60:
-            return False
-        dist = ((pix[0] - bg[0]) ** 2 + (pix[1] - bg[1]) ** 2 + (pix[2] - bg[2]) ** 2) ** 0.5
-        return dist > 45
-
-    # crop to the bounding box of the actual mark (drop the flat margins)
-    mask = Image.new("L", work.size, 0)
-    mpx = mask.load()
-    assert mpx is not None  # a freshly created image always has pixel access
-    for y in range(work.height):
-        for x in range(work.width):
-            if visible(pget(wpx, x, y)):
-                mpx[x, y] = 255
-    bbox = mask.getbbox()
-    if bbox:
-        work = work.crop(bbox)
-
-    rows = max(1, round(work.height * (width / work.width) / 2)) * 2
-    small = work.resize((width, rows), Image.Resampling.BOX)
-    px = small.load()
-
-    t = Text()
-    for y in range(0, rows, 2):
-        for x in range(width):
-            top, bot = pget(px, x, y), pget(px, x, y + 1)
-            tv, bv = visible(top), visible(bot)
-            if not tv and not bv:
-                t.append(" ")
-            elif tv and bv:
-                t.append("▀", style=Style(color=_rgb(top), bgcolor=_rgb(bot)))
-            elif tv:
-                t.append("▀", style=Style(color=_rgb(top)))
-            else:
-                t.append("▄", style=Style(color=_rgb(bot)))
-        if y + 2 < rows:
-            t.append("\n")
-    return t
+    art = p.read_text(encoding="utf-8").rstrip("\n")
+    if not art:
+        return None
+    return Text(art, style=C_GOLD)
 
 
 def welcome_renderable(

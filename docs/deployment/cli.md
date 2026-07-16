@@ -37,10 +37,9 @@ tool calls/results, and `RenderUI` payloads drawn as real terminal widgets
 (cards, tables, bar charts, stats).
 
 Both paths open with a full-width welcome card (logo + user, provider, model,
-storage, session). The logo is the bundled `harness/interfaces/assets/logo.png`
-rendered as background-stripped half-block art (works in every terminal,
-including ones without an inline-image protocol); point `HARNESS_LOGO_PATH` at
-another PNG to change it, or set it to an empty string to drop the logo.
+storage, session). The logo is the bundled block-character art in
+`harness/interfaces/assets/_logo_art.txt`; point `HARNESS_LOGO_PATH` at another
+art file to change it, or set it to an empty string to drop the logo.
 
 The harness is multi-tenant, so every session belongs to a user. The CLI
 defaults that id to your OS username; override it with a positional arg
