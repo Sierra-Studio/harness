@@ -1298,3 +1298,31 @@ def test_azure_stream_reuses_openai_base():
     assert tc["function"]["arguments"] == '{"command": "ls"}'
     assert res.tokens_in == 11 and res.tokens_out == 7
     assert captured["params"] == {"api-version": "2024-10-21"}
+
+
+def test_mcp_direct_tools_register_in_name_order():
+    """expose="direct" registers a server's tools sorted by name regardless of
+    the order the server lists them — the spec order feeds the model prompt,
+    so it must be stable across restarts (prefix caching)."""
+    from harness.tools.capabilities import ProviderHost
+
+    class StubMcpClient:
+        name = "stub"
+
+        def start(self):
+            pass
+
+        def list_tools(self):
+            # deliberately unsorted, as an MCP server is free to return
+            return [
+                {"name": "zeta", "description": "z", "inputSchema": {}},
+                {"name": "alpha", "description": "a", "inputSchema": {}},
+                {"name": "midway", "description": "m", "inputSchema": {}},
+            ]
+
+    h = _htools()
+    before = list(h.tools.tools)
+    n = ProviderHost(h.tools, h.repo).add_mcp(StubMcpClient(), expose="direct")
+    assert n == 3
+    added = list(h.tools.tools)[len(before) :]
+    assert added == ["alpha", "midway", "zeta"]

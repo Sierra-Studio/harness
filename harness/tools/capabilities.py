@@ -60,7 +60,9 @@ class ProviderHost:
         self._registry.mcp_clients[client.name] = client
         n = ingest_server(self._repo, client)
         if expose == "direct":
-            for spec in client.list_tools():
+            # Sorted by name: MCP servers guarantee no listing order, and an
+            # order change between restarts would silently break prefix caching.
+            for spec in sorted(client.list_tools(), key=lambda s: s.get("name", "")):
                 if spec.get("name"):
                     self._registry.register(McpProxyTool(client, spec), replace=True)
         return n
