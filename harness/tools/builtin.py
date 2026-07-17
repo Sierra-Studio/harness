@@ -25,12 +25,21 @@ if TYPE_CHECKING:
     from .capabilities import ToolProvider
 
 
+# The interface-supplied mid-turn prompt callback, the free-form analogue of
+# Permissions.asker: `(question, meta) -> answer`. `meta` may carry
+# {"options": [...]} for a fixed choice set. Installed on ToolRegistry.prompter
+# by the interface (blocking in CLI/TUI); None when non-interactive.
+Prompter = Callable[[str, dict], str]
+
+
 @dataclass
 class ToolContext:
     """Dependencies handed to a tool at dispatch time.
 
     `mcp_clients` is the SAME live dict the registry owns (mutated in place by
     Harness.add_mcp_*), so a tool always sees currently-connected servers.
+    `prompter` is the interface's mid-turn human-input callback (see AskUser);
+    None when no human is available (non-interactive/server).
     """
 
     repo: Repository
@@ -38,6 +47,7 @@ class ToolContext:
     mcp_clients: dict  # name -> McpClient (live reference)
     config: Config
     skills: Skills
+    prompter: Prompter | None = None
 
 
 class Tool:
@@ -68,6 +78,26 @@ class Tool:
 
     def run(self, ctx: ToolContext, session: Session, args: dict) -> str:
         raise NotImplementedError
+
+
+class ToolSuspend(Exception):
+    """Control-flow signal a tool (or an AskUser prompter) raises to SUSPEND the
+    turn for out-of-band human input, instead of returning a result.
+
+    Unlike every other exception a tool may raise — which `ToolRegistry.dispatch`
+    deliberately swallows into an ``ERROR running ...`` result so a buggy tool
+    never crashes the loop — this one is RE-RAISED by dispatch and propagates out
+    of `run_turn_stream`. That lets an async backend abort the generator exactly
+    as it does for the permission `asker`, capture the pending call (its `call_id`
+    is on the `tool_start` event already streamed), and later resume with
+    ``resume_turn_stream(approved_call={..., "result": answer})``. Synchronous
+    interfaces (CLI/TUI) don't raise this — their prompter blocks and returns the
+    answer directly. Carries the `question`/`options` for the backend's use."""
+
+    def __init__(self, question: str = "", options: list | None = None):
+        super().__init__(question)
+        self.question = question
+        self.options = options or []
 
 
 # A custom tool handler receives (session, arguments) and returns the tool
@@ -542,6 +572,116 @@ class RenderUI(Tool):
         return f"UI rendered (root: {root['type']})."
 
 
+class AskUser(Tool):
+    """Pause the turn to ask the human a question, returning their answer as the
+    tool result. The general, prompt-driven human-in-the-loop tool (as opposed to
+    the fixed permission gate): the model calls it at whatever checkpoint the
+    user's instructions/persona set up. The actual prompting is delegated to the
+    interface-supplied `ToolContext.prompter` callback — blocking in the CLI/TUI,
+    or (for async backends) something that raises to suspend the turn, resumed via
+    `resume_turn_stream(approved_call={..., "result": answer})`. When no prompter
+    is installed (non-interactive/server), it returns a sentinel and the model
+    proceeds, so a turn never hangs."""
+
+    name = "AskUser"
+    description = (
+        "Pause and ask the human for a decision, approval, or missing input before "
+        "continuing. Use this at a checkpoint your instructions (or the user) asked "
+        "you to confirm — e.g. an approval pipeline, or 'confirm before deploying' — "
+        "or when you're genuinely blocked on a choice only the human can make. Pass "
+        "the 'question' as clear prose. Optionally pass 'options' (a list of choices, "
+        "e.g. [\"approve\", \"reject\"]) when there is a fixed set of answers; omit it "
+        "for free-form input. The user's answer comes back as this tool's result — "
+        "incorporate it and continue. If no human is available you'll get a note "
+        "saying so; then proceed with your best judgment."
+    )
+    parameters = {
+        "type": "object",
+        "properties": {
+            "question": {
+                "type": "string",
+                "description": "The question to put to the human, as clear prose.",
+            },
+            "options": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Optional fixed set of answer choices (e.g. "
+                '["approve", "reject"]). Omit for free-form input.',
+            },
+        },
+        "required": ["question"],
+    }
+    guidance = (
+        "- AskUser(question, options?): pause mid-task and ask the human for a "
+        "decision, approval, or missing input, then continue with their answer as "
+        "the tool result. Reach for it whenever your instructions or the user set up "
+        "a confirmation/approval checkpoint (e.g. 'confirm before deploying', an "
+        "approval pipeline between steps), or when you're truly blocked on a choice "
+        "only the human can make. Pass 'options' for a fixed set of choices; omit it "
+        "for free text. Don't overuse it — only stop when a human decision is "
+        "genuinely required, not for things you can reasonably decide yourself."
+    )
+
+    _NO_HUMAN = (
+        "No human is available to answer right now; proceed with your best judgment "
+        "and note the assumption you made."
+    )
+
+    def run(self, ctx: ToolContext, session: Session, args: dict) -> str:
+        question = str(args.get("question", "")).strip()
+        if not question:
+            return "ERROR: 'question' is required."
+        if ctx.prompter is None:
+            return self._NO_HUMAN
+        options = args.get("options")
+        meta = {"options": options} if isinstance(options, list) and options else {}
+        answer = ctx.prompter(question, meta)
+        return answer if (isinstance(answer, str) and answer.strip()) else "(no answer given)"
+
+
+class ExitPlanMode(Tool):
+    """Only meaningful (and only registered — see `sync_plan_mode_tool`) while
+    the harness is in plan mode. Calling it is gated by `Permissions.check()`
+    exactly like any other tool call: `run()` only ever executes once a human
+    has approved the plan, so it carries no approval/mode-transition logic of
+    its own — it just acknowledges."""
+
+    name = "ExitPlanMode"
+    description = (
+        "Present your implementation plan to the user for approval before writing "
+        "any code. Call this once you've finished researching in plan mode and have "
+        "a concrete, actionable plan. Pass the full plan as markdown in 'plan' — be "
+        "specific about files and changes, not just intent. If the user approves, "
+        "you leave plan mode and may start implementing (each subsequent tool call "
+        "will need a one-off confirmation). If they reject it, this call's result "
+        "carries their feedback — revise the plan and call ExitPlanMode again."
+    )
+    parameters = {
+        "type": "object",
+        "properties": {
+            "plan": {
+                "type": "string",
+                "description": "The full implementation plan, written as markdown.",
+            }
+        },
+        "required": ["plan"],
+    }
+    # Deliberately no `guidance`: guidance snippets are baked into the system
+    # prompt once, at Harness construction / set_persona(), and would go stale
+    # across a runtime mode toggle (nothing calls set_persona() on /plan or
+    # shift+tab). The live, always-fresh explanation is this tool's own
+    # `description` (sent fresh every turn via tool_specs()) plus the
+    # per-turn plan-mode instruction block AgentLoop injects into the prompt.
+    guidance = ""
+
+    def run(self, ctx: ToolContext, session: Session, args: dict) -> str:
+        return (
+            "Plan approved by the user. You are now OUT of plan mode (manual mode) — "
+            "proceed with implementing the plan. Each subsequent tool call will need "
+            "a one-off approval from the user before it runs."
+        )
+
+
 def default_tools() -> list[Tool]:
     """Fresh instances of every built-in tool, in prompt order. This is the
     default `tools` when none are passed to the Harness/ToolRegistry."""
@@ -555,6 +695,7 @@ def default_tools() -> list[Tool]:
         Write(),
         Edit(),
         RenderUI(),
+        AskUser(),
     ]
 
 
@@ -593,6 +734,10 @@ class ToolRegistry:
         self.mcp_clients = mcp_clients or {}  # name -> McpClient (mutated by add_mcp_*)
         self.config = config
         self.skills = skills
+        # Mid-turn human-input callback (see AskUser / ToolContext.prompter). The
+        # interface installs it (like Permissions.asker); None means no human, so
+        # AskUser returns a sentinel instead of hanging.
+        self.prompter: Prompter | None = None
         self.tools: dict[str, Tool] = {}
         self.providers: list[ToolProvider] = []  # successfully registered, for close()
         # None/True -> all built-ins; False/[] -> none; else exactly the given list.
@@ -640,12 +785,20 @@ class ToolRegistry:
             raise ValueError(f"Duplicate tool name '{tool.name}' in registry.")
         self.tools[tool.name] = tool
 
+    def deregister(self, name: str) -> bool:
+        """Remove a tool from the active set. Returns True if it was present.
+        Symmetric counterpart to register() — same "effective on the model's
+        next turn" contract, since tool_specs() reads the map live."""
+        return self.tools.pop(name, None) is not None
+
     # ---- specs sent to the model ----
     def tool_specs(self) -> list[dict]:
         return [t.spec() for t in self.tools.values()]
 
     def _context(self) -> ToolContext:
-        return ToolContext(self.repo, self.sandbox, self.mcp_clients, self.config, self.skills)
+        return ToolContext(
+            self.repo, self.sandbox, self.mcp_clients, self.config, self.skills, self.prompter
+        )
 
     # ---- dispatch ----
     def dispatch(self, session: Session, call: dict) -> dict:
@@ -658,6 +811,11 @@ class ToolRegistry:
             else:
                 # Not an active tool -> treat as an external MCP index tool.
                 content = call_index_tool(ctx, name, args)
+        except ToolSuspend:
+            # NOT an error: a deliberate "pause the turn for human input" signal
+            # (see AskUser). Let it propagate so the backend can suspend/resume,
+            # rather than swallowing it into an ERROR result below.
+            raise
         except Exception as e:  # tools must never crash the loop
             content = f"ERROR running {name}: {e}"
         return {"tool_call_id": call_id, "name": name, "content": content}
@@ -675,3 +833,25 @@ class ToolRegistry:
             except json.JSONDecodeError:
                 raw = {}
         return name, raw, call_id
+
+
+def sync_plan_mode_tool(tools: ToolRegistry, mode: str) -> None:
+    """Keep ExitPlanMode's registration in `tools` in sync with `mode`: present
+    only while mode == "plan". Idempotent.
+
+    CAUTION: do not call this from inside a permission `asker` callback while
+    an ExitPlanMode call is itself mid-dispatch — deregistering here would
+    remove the tool from the registry before ToolRegistry.dispatch() looks it
+    up for the very call being approved, turning "plan approved" into an
+    "Unknown tool 'ExitPlanMode'" error. AgentLoop._run_steps calls this at the
+    top of every step (i.e. only after the previous step's dispatches have all
+    finished), which is the one call site that's safe unconditionally; Harness
+    also calls it eagerly whenever it's safe to do so (construction time,
+    Harness.set_permission_mode from a slash command / shift+tab — never
+    mid-dispatch).
+    """
+    has = "ExitPlanMode" in tools.tools
+    if mode == "plan" and not has:
+        tools.register(ExitPlanMode())
+    elif mode != "plan" and has:
+        tools.deregister("ExitPlanMode")

@@ -169,6 +169,94 @@ def test_auto_mode_never_asks():
     assert any("ran" in t.content["content"] for t in h.repo.turns if t.role == "tool")
 
 
+def _queue_ask(p, question="Proceed?", options=None):
+    import json
+
+    args = {"question": question}
+    if options:
+        args["options"] = options
+    p.queue(tool_calls=[{"id": "c1", "function": {"name": "AskUser", "arguments": json.dumps(args)}}])
+    p.queue(content="done")
+
+
+def test_ask_user_returns_human_answer():
+    p = FakeProvider(context_window=4000)
+    _queue_ask(p, "Deploy to prod now?", ["approve", "reject"])
+    h = _harness(p)
+    seen = []
+    h.tools.prompter = lambda q, meta: (seen.append((q, meta)), "ship it")[1]
+    s = h.start_session("u1")
+    r = h.run_turn(s, "do the deploy")
+    assert r.status == "ok"
+    tool_turns = [t for t in h.repo.turns if t.role == "tool"]
+    assert tool_turns and tool_turns[0].content["content"] == "ship it"
+    # the question and its options reached the prompter
+    assert seen and seen[0][0] == "Deploy to prod now?"
+    assert seen[0][1].get("options") == ["approve", "reject"]
+
+
+def test_ask_user_no_prompter_returns_sentinel():
+    p = FakeProvider(context_window=4000)
+    _queue_ask(p, "Which region?")
+    h = _harness(p)  # no prompter installed (non-interactive)
+    s = h.start_session("u1")
+    r = h.run_turn(s, "go")
+    assert r.status == "ok"  # the turn never hangs
+    tool_turns = [t for t in h.repo.turns if t.role == "tool"]
+    assert tool_turns and "No human is available" in tool_turns[0].content["content"]
+
+
+def test_ask_user_not_gated_by_permission_in_manual_mode():
+    # AskUser is READONLY, so the permission gate must NOT prompt for it (that
+    # would double-prompt) — only the AskUser prompter fires.
+    from harness.settings import PermissionConfig
+
+    p = FakeProvider(context_window=4000)
+    _queue_ask(p, "ok?")
+    h = _harness(p, permissions=PermissionConfig(mode="manual"))
+    gate_calls = []
+    h.permissions.asker = lambda name, args: (gate_calls.append(name), "deny")[1]
+    h.tools.prompter = lambda q, meta: "yes"
+    s = h.start_session("u1")
+    r = h.run_turn(s, "go")
+    assert r.status == "ok"
+    assert "AskUser" not in gate_calls  # the permission gate never fired for AskUser
+    tool_turns = [t for t in h.repo.turns if t.role == "tool"]
+    assert tool_turns and tool_turns[0].content["content"] == "yes"
+
+
+def test_ask_user_prompter_can_suspend_the_turn():
+    # A prompter that raises ToolSuspend aborts the generator (the async HITL
+    # path) — the tool_start is streamed first, and dispatch re-raises the signal
+    # instead of swallowing it into an ERROR result.
+    import pytest
+
+    from harness.tools import ToolSuspend
+
+    p = FakeProvider(context_window=4000)
+    _queue_ask(p, "Which region?", ["us-east", "eu-west"])
+    h = _harness(p)
+
+    def prompter(question, meta):
+        raise ToolSuspend(question, meta.get("options"))
+
+    h.tools.prompter = prompter
+    s = h.start_session("u1")
+
+    seen = []
+    with pytest.raises(ToolSuspend) as excinfo:
+        for ev in h.run_turn_stream(s, "set it up"):
+            seen.append(ev)
+    # the call was announced before the suspension, so the backend can capture
+    # its call_id / args from the tool_start event
+    starts = [e for e in seen if e.kind == "tool_start" and e.name == "AskUser"]
+    assert starts and starts[0].args.get("question") == "Which region?"
+    # no tool_result was recorded (nothing to run yet) and the signal carries the Q
+    assert not any(e.kind == "tool_result" for e in seen)
+    assert excinfo.value.question == "Which region?"
+    assert excinfo.value.options == ["us-east", "eu-west"]
+
+
 def test_budget_guard_returns_partial():
     p = FakeProvider(context_window=4000)
     for _ in range(10):

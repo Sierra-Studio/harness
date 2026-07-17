@@ -97,6 +97,38 @@ def test_resume_can_suspend_again_on_a_later_gated_tool():
         list(h.resume_stateless_stream(_suspended_seed(), approved, external_id="chat"))
 
 
+def test_resume_injects_result_override():
+    # An AskUser turn suspended out-of-process resumes by injecting the human's
+    # typed answer AS the tool result — the tool is not re-run, the model is not
+    # asked to replay.
+    p = FakeProvider(context_window=4000)
+    p.queue(content="using us-east then")
+    h = _harness(p)
+
+    seed = [
+        {"role": "user", "content": "set it up"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {"id": "c1", "function": {"name": "AskUser", "arguments": '{"question": "Which region?"}'}}
+            ],
+        },
+    ]
+    approved = {"name": "AskUser", "call_id": "c1", "result": "yes, region us-east"}
+    events = list(h.resume_stateless_stream(seed, approved, external_id="chat"))
+
+    kinds = [e.kind for e in events]
+    assert "tool_start" not in kinds  # the call was already announced pre-suspension
+    tool_res = next(e for e in events if e.kind == "tool_result")
+    assert tool_res.content == "yes, region us-east"  # the injected answer, verbatim
+    final = next(e for e in events if e.kind == "final")
+    assert final.result.status == "ok"
+    assert final.result.text == "using us-east then"
+    # Determinism: exactly ONE model call (the continuation), no replay.
+    assert len(p.calls) == 1
+
+
 def test_resume_requires_in_memory_repo(monkeypatch):
     p = FakeProvider(context_window=4000)
     h = _harness(p)

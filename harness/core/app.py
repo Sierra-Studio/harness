@@ -18,6 +18,7 @@ from ..tools import (
     Tool,
     ToolProvider,
     ToolRegistry,
+    sync_plan_mode_tool,
 )
 from .loop import AgentLoop, Hook, LoopEvent, TurnResult
 from .permissions import Permissions
@@ -114,6 +115,9 @@ class Harness:
         # Permission gate: manual mode asks before each side-effecting tool call.
         # Interfaces (TUI/CLI) install an `asker` and can flip the mode at runtime.
         self.permissions = permissions or Permissions(mode=self.cfg.permissions.mode)
+        # If constructed already in plan mode (env var / saved pref), make sure
+        # ExitPlanMode is registered from the start.
+        sync_plan_mode_tool(self.tools, self.permissions.mode)
         self.memory = Memory(self.repo, self.provider, self.cfg, self.observer)
         # System prompt: explicit override wins; otherwise assemble the layered
         # persona (PERSONA.md / default identity) plus guidance composed from
@@ -179,6 +183,20 @@ class Harness:
         return self.loop.run_turn_stream(session, message)
 
     # ---- runtime controls (change a running Harness without reconstructing it) ----
+    def set_permission_mode(self, mode: str) -> str:
+        """Switch the permission mode and keep ExitPlanMode's registration in
+        sync with it. Interfaces (TUI/CLI) should use this instead of touching
+        `self.permissions` directly, so tool registration never drifts out of
+        sync with the mode. Safe to call any time EXCEPT from inside a
+        permission `asker` callback while a call is mid-dispatch (see
+        `sync_plan_mode_tool`'s docstring) — the ExitPlanMode-approval flow in
+        tui.py/cli.py deliberately bypasses this method and flips
+        `self.permissions.mode` directly for that reason, relying on
+        AgentLoop's own per-step resync instead."""
+        effective = self.permissions.set_mode(mode)
+        sync_plan_mode_tool(self.tools, effective)
+        return effective
+
     def set_persona(self, persona: str = "", system_prompt: str = "") -> None:
         """Rebuild the system prompt in place: `system_prompt` wins if given,
         else the persona/default-identity + per-tool-guidance layering — same
@@ -268,10 +286,14 @@ class Harness:
 
         `seed_messages` is the caller-owned window captured at suspension (system
         excluded) — including the assistant message whose tool call is pending.
-        `approved_call` is the exact call to run (or a denial). The seeded window
-        is rebuilt, the approved call executed verbatim, and the step loop
-        continues — deterministically, without re-invoking the model to reproduce
-        the tool call. Requires an ephemeral repo, like run_stateless_stream.
+        `approved_call` is the exact call to run, or an override: ``"denied": True``
+        to record a denial, or ``"result": <str>`` to inject that string as the
+        tool result WITHOUT running the tool (how an ``AskUser`` suspension resumes —
+        the human's typed answer is the result). The seeded window is rebuilt, the
+        call executed/overridden, and the step loop continues — deterministically,
+        without re-invoking the model to reproduce the tool call. Requires an
+        ephemeral repo, like run_stateless_stream. See
+        AgentLoop.resume_turn_stream for the override semantics.
         """
         if not isinstance(self.repo, InMemoryRepository):
             raise RuntimeError(

@@ -159,13 +159,14 @@ class BashConfig:
         )
 
 
-PermissionMode = Literal["auto", "manual"]
+PermissionMode = Literal["auto", "manual", "plan"]
 
 
 @dataclass(frozen=True)
 class PermissionConfig:
     # "auto" => every tool call runs unprompted; "manual" => ask before each
-    # side-effecting call (see harness.core.permissions.Permissions).
+    # side-effecting call; "plan" => read-only research mode (see
+    # harness.core.permissions.Permissions).
     mode: PermissionMode = "auto"
 
     @classmethod
@@ -176,6 +177,8 @@ class PermissionConfig:
             return cls(mode="auto")
         if raw == "manual":
             return cls(mode="manual")
+        if raw == "plan":
+            return cls(mode="plan")
         return cls(mode=cls.mode)
 
 @dataclass(frozen=True)

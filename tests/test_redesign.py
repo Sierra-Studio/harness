@@ -50,6 +50,35 @@ def test_max_tool_calls_per_step_truncates():
     assert r.status == "ok"
 
 
+def test_truncated_calls_leave_no_dangling_tool_call_id():
+    """The recorded assistant message must only advertise tool calls that got a
+    response. Otherwise the next model call 400s ("An assistant message with
+    'tool_calls' must be followed by tool messages responding to each
+    'tool_call_id'"). Regression: a model emitting parallel calls under
+    max_tool_calls_per_step=1 used to persist all of them but answer only one."""
+    p = FakeProvider(context_window=4000)
+    p.queue(
+        tool_calls=[
+            {"id": f"c{i}", "function": {"name": "Bash", "arguments": '{"command": "echo k"}'}}
+            for i in range(3)
+        ]
+    )
+    p.queue(content="done")
+    h = Harness(_cfg(max_tool_calls_per_step=1), system_prompt="sys.", provider=p)
+    s = h.start_session("u1")
+    r = h.run_turn(s, "go")
+
+    assistant = next(
+        t for t in h.repo.turns if t.role == "assistant" and isinstance(t.content, dict)
+        and t.content.get("tool_calls")
+    )
+    advertised = {c["id"] for c in assistant.content["tool_calls"]}
+    answered = {t.content["tool_call_id"] for t in h.repo.turns if t.role == "tool"}
+    assert advertised == answered  # every recorded call has a matching response
+    assert len(advertised) == 1  # only the one call within the per-step cap
+    assert r.status == "ok"
+
+
 def test_max_tool_calls_per_turn_stops_turn():
     p = FakeProvider(context_window=4000)
     for _ in range(5):

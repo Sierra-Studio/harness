@@ -62,32 +62,49 @@ PROMPT = "›"
 
 _TONE = {"neutral": C_ACCENT, "success": C_OK, "warning": C_WARN, "danger": C_ERR}
 
-SLASH_COMMANDS = [
-    ("/help", "show this help"),
-    ("/session", "session id, model, tokens spent"),
-    ("/skills", "list saved skills"),
-    ("/skills add <name> <summary> [body...]", "author a new skill (body defaults to summary)"),
-    ("/tools", "list active tools"),
-    ("/mcp", "list connected MCP servers"),
-    ("/mcp http <url> [name] [--direct]", "connect a remote MCP server"),
-    ("/mcp stdio <name> <cmd...> [--direct]", "connect a local stdio MCP server"),
-    ("/sessions", "list your recent sessions"),
-    ("/resume [n|id]", "resume a session (most recent if no arg)"),
-    ("/retry", "re-run your last message"),
-    ("/copy", "copy the last answer to the clipboard"),
-    ("/save [file]", "save the transcript as markdown"),
-    ("/persona [text|clear]", "show/set/reset the persona (saved for next launch)"),
-    ("/system-prompt [text|clear]", "show/set/reset a raw system-prompt override"),
-    ("/model [name]", "show/change this session's model (saved as the default)"),
-    ("/budget [n|unlimited]", "show/change this session's token budget (saved as the default)"),
-    ("/theme [name]", "change the color theme — TUI only, ctrl+p also works"),
-    ("/clear", "clear the screen (keeps the session)"),
-    ("/new", "start a fresh session, same user"),
-    ("/exit, /quit, exit, quit", "end the session"),
+# Slash commands grouped by intent. Each group is (title, glyph, rows); rows are
+# (command, description). help_renderable() lays the groups out as cards; a flat
+# SLASH_COMMANDS view is derived below for any consumer that wants the whole list.
+SLASH_GROUPS: list[tuple[str, str, list[tuple[str, str]]]] = [
+    ("Session", "◆", [
+        ("/session", "id, model, tokens spent"),
+        ("/sessions", "list your recent sessions"),
+        ("/resume [n|id]", "resume a session (most recent if no arg)"),
+        ("/new", "start a fresh session, same user"),
+        ("/clear", "clear the screen (keeps the session)"),
+        ("/exit, /quit", "end the session"),
+    ]),
+    ("Conversation", "↺", [
+        ("/retry", "re-run your last message"),
+        ("/copy", "copy the last answer to the clipboard"),
+        ("/save [file]", "save the transcript as markdown"),
+    ]),
+    ("Configure", "⚙", [
+        ("/model [name]", "show/change model (saved as default)"),
+        ("/budget [n|unlimited]", "show/change token budget (saved as default)"),
+        ("/theme [name]", "change the color theme — ^P also works"),
+        ("/persona [text|clear]", "show/set/reset the persona (persisted)"),
+        ("/system-prompt [text|clear]", "show/set/reset a raw system-prompt override"),
+    ]),
+    ("Tools & skills", "⛬", [
+        ("/tools", "list active tools"),
+        ("/skills", "list saved skills"),
+        ("/skills add <name> <summary> [body...]", "author a new skill"),
+        ("/mcp", "list connected MCP servers"),
+        ("/mcp http <url> [name] [--direct]", "connect a remote MCP server"),
+        ("/mcp stdio <name> <cmd...> [--direct]", "connect a local stdio MCP server"),
+    ]),
+]
+
+# Flat view, kept for compatibility with any consumer that wants every command.
+SLASH_COMMANDS = [("/help", "show this help")] + [
+    row for _title, _glyph, rows in SLASH_GROUPS for row in rows
 ]
 
 CLI_COMMANDS = [
     ("harness chat [user]", "interactive session (/help once inside)"),
+    ("harness chat --inline", "Claude-Code-style inline UI (native scroll/select/copy)"),
+    ("harness chat --plain", "minimal line-based REPL (no boxed input)"),
     ("harness init-db", "apply schema.sql to DATABASE_URL"),
     ("harness serve [host] [port]", "HTTP server, streams turns as SSE"),
     ("harness add-skill <user_id> <name> <summary> [body]", "author a skill"),
@@ -219,7 +236,8 @@ def _command_table(rows: list[tuple[str, str]]) -> Table:
     table.add_column(style=C_ACCENT, no_wrap=True)
     table.add_column(style=C_DIM, overflow="ellipsis", no_wrap=True)
     for cmd, desc in rows:
-        table.add_row(cmd, desc)
+        # escape() so bracketed argument hints aren't swallowed as Rich markup.
+        table.add_row(escape(cmd), escape(desc))
     return table
 
 
@@ -315,15 +333,41 @@ def session_renderable(session: Any) -> RenderableType:
     return t
 
 
-def help_renderable() -> RenderableType:
-    return Group(
-        _command_table(SLASH_COMMANDS),
-        Text(
-            "\nAnything else is sent to the model. Type / for command autocomplete; "
-            "end a line with \\ to continue on the next line.",
-            style=C_DIM,
-        ),
+def _help_group_card(title: str, glyph: str, rows: list[tuple[str, str]]) -> RenderableType:
+    """One category of slash commands as a titled, bordered card."""
+    grid = Table.grid(padding=(0, 2, 0, 0))
+    grid.add_column(style=C_ACCENT, no_wrap=True)
+    grid.add_column(style=C_DIM, overflow="fold")
+    for cmd, desc in rows:
+        # escape() so bracketed hints — [name], [n|id], [file] — render literally
+        # instead of being swallowed as Rich markup tags.
+        grid.add_row(escape(cmd), escape(desc))
+    heading = Text()
+    heading.append(f"{glyph} ", style=C_GOLD)
+    heading.append(title, style=f"bold {C_LIGHT}")
+    return Panel(
+        grid,
+        title=heading,
+        title_align="left",
+        border_style=C_DIM,
+        box=box.ROUNDED,
+        padding=(0, 1),
+        expand=True,
     )
+
+
+def help_renderable() -> RenderableType:
+    """Slash commands grouped into titled cards, stacked so each command and its
+    description gets full width — reads at a glance instead of as one flat list."""
+    header = logo_mark()
+    header.append("  commands", style=f"bold {C_ACCENT}")
+    cards = [_help_group_card(title, glyph, rows) for title, glyph, rows in SLASH_GROUPS]
+    footer = Text(
+        "Anything else is sent to the model.  Type / for autocomplete · "
+        "end a line with \\ to continue it · /help anytime.",
+        style=C_DIM,
+    )
+    return Group(header, Text(""), *cards, Text(""), footer)
 
 
 def _ago(dt: datetime | None) -> str:
@@ -483,6 +527,30 @@ def tool_call_renderable(name: str, args_str: str) -> Text:
 def tool_result_renderable(text: str, *, is_error: bool = False) -> Text:
     marker, style = ("✗ ", C_ERR) if is_error else ("↳ ", C_DIM)
     return Text("    " + marker + text, style=style)
+
+
+def plan_renderable(plan: str) -> RenderableType:
+    """An ExitPlanMode call's plan, rendered as markdown in a titled panel —
+    shown at tool_start, before the approve/reject prompt appears below it."""
+    body: RenderableType = Markdown(plan) if (plan or "").strip() else Text("(empty plan)", style=C_DIM)
+    return Panel(body, title="proposed plan · awaiting approval", border_style=C_ACCENT, padding=(0, 1))
+
+
+def print_plan(plan: str) -> None:
+    console.print()
+    console.print(plan_renderable(plan))
+
+
+def ask_renderable(question: str, options: list | None = None) -> RenderableType:
+    """An AskUser question, rendered in a titled panel — the model has paused
+    mid-turn to ask the human. `options`, when given, are shown as a hint line;
+    the answer is typed in either interface."""
+    body = Text()
+    body.append((question or "").strip() or "(no question)")
+    if options:
+        body.append("\n")
+        body.append("options: " + "  ·  ".join(str(o) for o in options), style=C_DIM)
+    return Panel(body, title="the agent needs your input", border_style=C_ACCENT, padding=(0, 1))
 
 
 def status_bar(

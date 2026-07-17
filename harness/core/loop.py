@@ -15,7 +15,7 @@ from ..models import Session
 from ..observability import Observer
 from ..persistence import Repository
 from ..settings import Config
-from ..tools import ToolRegistry
+from ..tools import ToolRegistry, sync_plan_mode_tool
 from .permissions import Permissions
 
 
@@ -25,6 +25,42 @@ class TurnResult:
     status: str  # ok | budget_exhausted | max_steps | tool_limit_exhausted
     steps: int
     tokens_spent: int
+
+
+# Appended to the system prompt (see _run_steps) only while permissions.mode
+# == "plan" — a small delta near the end of the prompt, like the skills
+# catalog, so the stable persona prefix stays cache-friendly.
+_PLAN_MODE_BLOCK = """## Plan mode is ON — read-only
+
+You are in PLAN MODE: research and design only, right now. You may freely \
+explore — read files and directories, search, grep, run git status/diff/log, \
+and any other read-only command — but Write, Edit, and any command that \
+changes state (installs, migrations, git commit/push/checkout/reset, deleting \
+or moving files, etc.) will be BLOCKED; do not keep retrying a blocked call. \
+When you have a concrete, actionable plan, call the ExitPlanMode tool with the \
+full plan written as markdown. The user will review it: if they approve, you \
+leave plan mode and start implementing (each following tool call needs a \
+one-off confirmation); if they reject it, you'll get their feedback back as \
+this call's result — revise the plan and call ExitPlanMode again."""
+
+
+def _denial_message(name: str, mode: str) -> str:
+    """Model-facing text for a permission-gate denial, tailored to why it
+    happened: a plan-mode blanket block reads differently from a plan
+    rejection, which reads differently from a genuine human manual-mode "no"."""
+    if mode == "plan" and name == "ExitPlanMode":
+        return (
+            "Your plan was not approved yet. Revise it based on any feedback the "
+            "user gave, then call ExitPlanMode again with the updated plan when ready."
+        )
+    if mode == "plan":
+        return (
+            f"Tool call '{name}' was blocked: plan mode is read-only. You may keep "
+            "exploring (read-only commands, SearchTools/GetTools, SearchSkills/"
+            "GetSkill) but must not write/edit files or run mutating commands. Call "
+            "ExitPlanMode with your plan when you're ready for it to be reviewed."
+        )
+    return f"Tool call '{name}' was denied by the user."
 
 
 class Hook:
@@ -161,11 +197,17 @@ class AgentLoop:
         """Continue a turn that suspended on the permission gate.
 
         `approved_call` is the exact call captured at suspension
-        (``{"name", "args", "call_id"}`` plus optional ``"denied"``): it is run
-        verbatim (or recorded as denied) and its result appended, then the normal
-        step loop resumes. Because the pending tool call was already recorded in
-        memory before the suspension, the model is never asked to re-emit it —
-        the continuation is deterministic, not a replay.
+        (``{"name", "args", "call_id"}``) plus at most one optional override:
+          - ``"denied": True`` — record a denial message instead of running it;
+          - ``"result": <str>`` — inject this string AS the tool result without
+            running the tool. This is how a turn that suspended on an ``AskUser``
+            call resumes: the human's answer *is* the result, so there is nothing
+            to re-run (a synchronous backend's blocking prompter never reaches
+            here — this is the async/out-of-process path).
+        With no override the call is run verbatim and its result appended. Then
+        the normal step loop resumes. Because the pending tool call was already
+        recorded in memory before the suspension, the model is never asked to
+        re-emit it — the continuation is deterministic, not a replay.
         """
         session = self.repo.get_session(session.id)
         name = approved_call["name"]
@@ -176,6 +218,10 @@ class AgentLoop:
         # duplicate the call in any consumer that accumulates tool traces.
         if approved_call.get("denied"):
             content = f"Tool call '{name}' was denied by the user."
+            self.memory.append(session, "tool", {"tool_call_id": call_id, "content": content})
+            yield LoopEvent("tool_result", name=name, call_id=call_id, content=content)
+        elif "result" in approved_call:
+            content = str(approved_call["result"])
             self.memory.append(session, "tool", {"tool_call_id": call_id, "content": content})
             yield LoopEvent("tool_result", name=name, call_id=call_id, content=content)
         else:
@@ -219,12 +265,18 @@ class AgentLoop:
             self.skills.list(session.user_id), self.cfg.memory.skills_in_prompt_limit
         )
         base = self.system_prompt + (f"\n\n{catalog}" if catalog else "")
+        if self.permissions.mode == "plan":
+            base += f"\n\n{_PLAN_MODE_BLOCK}"
         prompt = with_today(base)
 
         final_text = ""
         tool_calls_this_turn = 0
         for step in range(self.cfg.loop.max_steps):
             session = self.repo.get_session(session.id)
+            # Keep ExitPlanMode's registration in sync with the current mode.
+            # Must run here (top of a fresh step), never inside an asker
+            # callback mid-dispatch — see sync_plan_mode_tool's docstring.
+            sync_plan_mode_tool(self.tools, self.permissions.mode)
 
             # --- token-budget guard: stop & return partial (budget 0 = unlimited) ---
             if session.token_budget and session.tokens_spent >= session.token_budget:
@@ -256,6 +308,36 @@ class AgentLoop:
                 slot["tokens_in"] = res.tokens_in
                 slot["tokens_out"] = res.tokens_out
 
+            # Cap how many of this message's tool calls we will actually run,
+            # honouring both the per-step and remaining per-turn budgets, and
+            # trim the recorded assistant message to EXACTLY those before it is
+            # persisted. A tool_call recorded but never dispatched leaves a
+            # tool_call_id with no matching tool response, which makes the next
+            # model call fail ("tool_calls must be followed by tool messages").
+            # So the message we store must never advertise a call we won't answer.
+            requested = res.tool_calls
+            if requested:
+                room = len(requested)
+                per_step_limit = self.cfg.loop.max_tool_calls_per_step
+                if per_step_limit:
+                    room = min(room, per_step_limit)
+                per_turn_limit = self.cfg.loop.max_tool_calls_per_turn
+                if per_turn_limit:
+                    room = min(room, max(0, per_turn_limit - tool_calls_this_turn))
+                if room < len(requested):
+                    self.observer.log(
+                        session.id,
+                        None,
+                        "tool_calls_truncated",
+                        {"requested": len(requested), "kept": room},
+                    )
+                    # Drop the key entirely when nothing runs so we don't persist
+                    # a bare `tool_calls: []` — the message becomes a plain one.
+                    if room == 0:
+                        res.message.pop("tool_calls", None)
+                    else:
+                        res.message["tool_calls"] = requested[:room]
+
             assistant_turn = self.memory.append(
                 session,
                 "assistant",
@@ -268,45 +350,40 @@ class AgentLoop:
 
             self.memory.maybe_summarize(session, prompt)
 
-            if not res.tool_calls:
-                result = TurnResult(res.text, "ok", step + 1, session.tokens_spent)
+            calls = res.message.get("tool_calls") or []
+            if not calls:
+                # No calls to run: either a normal final answer, or the per-turn
+                # budget left no room to dispatch the calls the model asked for
+                # (which were trimmed off above). Distinguish the two so the turn
+                # ends with the right status — the recorded message is clean in
+                # both cases, so the window stays valid either way.
+                if requested:
+                    final_text = res.text or final_text
+                    result = TurnResult(
+                        final_text or "(tool call limit reached)",
+                        "tool_limit_exhausted",
+                        step + 1,
+                        session.tokens_spent,
+                    )
+                else:
+                    result = TurnResult(res.text, "ok", step + 1, session.tokens_spent)
                 self._fire_turn_hook("after_turn", session, result)
                 yield LoopEvent("final", result=result)
                 return
 
             final_text = res.text or final_text
-            calls = res.tool_calls
-            per_step_limit = self.cfg.loop.max_tool_calls_per_step
-            if per_step_limit and len(calls) > per_step_limit:
-                self.observer.log(
-                    session.id,
-                    assistant_turn.id,
-                    "tool_calls_truncated",
-                    {"requested": len(calls), "kept": per_step_limit},
-                )
-                calls = calls[:per_step_limit]
 
             for call in calls:
-                per_turn_limit = self.cfg.loop.max_tool_calls_per_turn
-                if per_turn_limit and tool_calls_this_turn >= per_turn_limit:
-                    result = TurnResult(
-                        final_text or "(tool call limit reached)",
-                        "tool_limit_exhausted",
-                        step + 1,
-                        self.repo.get_session(session.id).tokens_spent,
-                    )
-                    self._fire_turn_hook("after_turn", session, result)
-                    yield LoopEvent("final", result=result)
-                    return
                 tool_calls_this_turn += 1
                 name, args, call_id = self.tools._parse(call)
                 # before_tool hooks may transform the args; dispatch the effective call.
                 args = self._fire_before_tool(session, name, args)
                 yield LoopEvent("tool_start", name=name, args=args, call_id=call_id)
-                # Permission gate ("manual mode"): a denied call never runs; the
-                # model gets a tool result saying so, so it can adjust or stop.
+                # Permission gate ("manual"/"plan" mode): a denied call never
+                # runs; the model gets a tool result saying so, so it can
+                # adjust or stop.
                 if not self.permissions.check(name, args):
-                    denied = f"Tool call '{name}' was denied by the user."
+                    denied = _denial_message(name, self.permissions.mode)
                     self.memory.append(session, "tool", {"tool_call_id": call_id, "content": denied})
                     self.observer.log(session.id, assistant_turn.id, "tool_denied", {"name": name})
                     yield LoopEvent("tool_result", name=name, call_id=call_id, content=denied)

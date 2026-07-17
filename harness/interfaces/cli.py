@@ -29,7 +29,6 @@ import contextlib
 import os
 import re
 import sys
-from collections.abc import Callable
 from pathlib import Path
 from typing import Literal
 
@@ -316,12 +315,12 @@ def _run_command(h: Harness, session, external_id: str, line: str, run, last):
             )
         else:
             ui.error("usage: /mcp [http <url> [name]] | [stdio <name> <cmd...>] | [remove <name>] [--direct]")
-    elif cmd in ("/auto", "/manual"):
-        mode = h.permissions.set_mode(cmd[1:])
+    elif cmd in ("/auto", "/manual", "/plan"):
+        mode = h.set_permission_mode(cmd[1:])
         prefs.save(permission_mode=mode)
         ui.success(f"permission mode: {mode}")
     elif cmd == "/mode":
-        ui.info(f"permission mode: {h.permissions.mode}  (/auto · /manual)")
+        ui.info(f"permission mode: {h.permissions.mode}  (/auto · /plan · /manual)")
     elif cmd == "/new":
         h.close_session(session)
         session = h.start_session(external_id)
@@ -383,6 +382,10 @@ class _TurnView:
             self._stream.end()
             if ev.name == "RenderUI" and ui.render_ui(ev.args.get("root")):
                 self._rendered_ui.add(ev.call_id)
+            elif ev.name == "ExitPlanMode":
+                # Not added to _rendered_ui — the normal tool_result line
+                # below still prints the approve/reject outcome.
+                ui.print_plan(ev.args.get("plan", ""))
             else:
                 ui.tool_call(ui.tool_display_name(ev.name, ev.args), ui.tool_args_str(ev.name, ev.args))
             self._spin(f"running {ui.tool_display_name(ev.name, ev.args)}…")
@@ -460,16 +463,22 @@ def chat(argv: list[str]) -> int:
         or os.environ.get("HARNESS_USER", "").strip()
         or _default_user()
     )
-    plain = "--plain" in argv or not (sys.stdout.isatty() and sys.stdin.isatty())
+    is_tty = sys.stdout.isatty() and sys.stdin.isatty()
+    plain = "--plain" in argv or not is_tty
+    # --inline: the Claude-Code-style front-end (native scrollback/selection/copy,
+    # bordered box). Opt-in and TTY-only; ignored when piped or --plain.
+    inline = "--inline" in argv and is_tty and "--plain" not in argv
 
-    run_tui: Callable[..., int] | None = None
-    if not plain:
+    run_tui = None
+    if not plain and not inline:
         try:
             from .tui import run_tui
         except Exception:
             run_tui = None
 
     try:
+        if inline:
+            return _chat_inline(h, cfg, external_id)
         if run_tui is not None:
             mcp_lines = _connect_mcp(h)
             session = h.start_session(external_id)
@@ -479,6 +488,50 @@ def chat(argv: list[str]) -> int:
         for client in h.tools.mcp_clients.values():
             with contextlib.suppress(Exception):
                 client.stop()
+
+
+def _install_line_prompts(h: Harness) -> None:
+    """Wire the blocking stdin prompts the synchronous turn loop uses for
+    manual/plan-mode approvals and mid-turn AskUser. Shared by both line-based
+    front-ends (`_chat_plain` and `_chat_inline`) since neither has the TUI's
+    inline widgets — the turn runs on this thread and simply blocks on input."""
+
+    def ask_permission(name: str, args: dict) -> str:
+        from ..core import ALLOW, ALWAYS, DENY
+
+        if name == "ExitPlanMode":
+            ui.console.print(
+                f"\n[{ui.C_ACCENT}]permission[/] approve this plan and start implementing?  "
+                "[dim][y]approve [n]reject[/]"
+            )
+        else:
+            label = ui.tool_display_name(name, args)
+            ui.console.print(f"\n[{ui.C_ACCENT}]permission[/] {label}  [dim][y]allow [a]always [n]deny[/]")
+        try:
+            answer = ui.console.input("  > ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            return DENY
+        decision = {"y": ALLOW, "a": ALWAYS, "": ALLOW}.get(answer, DENY)
+        if name == "ExitPlanMode" and decision in (ALLOW, ALWAYS):
+            # NOT h.set_permission_mode — that would deregister ExitPlanMode
+            # before ToolRegistry.dispatch looks it up for this same call.
+            # See sync_plan_mode_tool's docstring / the TUI's _ask_permission.
+            h.permissions.set_mode("manual")
+            prefs.save(permission_mode="manual")
+            ui.success("plan approved — now in manual mode; each tool call needs approval")
+        return decision
+
+    h.permissions.asker = ask_permission
+
+    def ask_user(question: str, meta: dict) -> str:
+        ui.console.print()
+        ui.console.print(ui.ask_renderable(question, meta.get("options")))
+        try:
+            return ui.console.input("  > ").strip()
+        except (EOFError, KeyboardInterrupt):
+            return ""
+
+    h.tools.prompter = ask_user
 
 
 def _chat_plain(h: Harness, cfg: Config, external_id: str) -> int:
@@ -499,20 +552,7 @@ def _chat_plain(h: Harness, cfg: Config, external_id: str) -> int:
         else:
             ui.mcp_failed(name, url, Exception(extra))
     state = {"session": session, "last": {"user": "", "answer": ""}}
-
-    def ask_permission(name: str, args: dict) -> str:
-        """Manual-mode prompt for the line-based REPL."""
-        from ..core import ALLOW, ALWAYS, DENY
-
-        label = ui.tool_display_name(name, args)
-        ui.console.print(f"\n[{ui.C_ACCENT}]permission[/] {label}  [dim][y]allow [a]always [n]deny[/]")
-        try:
-            answer = ui.console.input("  > ").strip().lower()
-        except (EOFError, KeyboardInterrupt):
-            return DENY
-        return {"y": ALLOW, "a": ALWAYS, "": ALLOW}.get(answer, DENY)
-
-    h.permissions.asker = ask_permission
+    _install_line_prompts(h)
 
     def run(message: str) -> None:
         state["last"]["user"] = message
@@ -538,6 +578,79 @@ def _chat_plain(h: Harness, cfg: Config, external_id: str) -> int:
                 continue
             run(msg)
     except (EOFError, KeyboardInterrupt):
+        pass
+    created = h.close_session(state["session"])
+    if created:
+        ui.info(f"induced skills: {created}")
+    ui.info("session closed.")
+    return 0
+
+
+def _chat_inline(h: Harness, cfg: Config, external_id: str) -> int:
+    """The Claude-Code-style inline front-end: identical turn/command/streaming
+    engine as `_chat_plain`, but input is read through a bordered box pinned at
+    the bottom (see inputbox.read_boxed). It never enters the alternate screen
+    or captures the mouse, so the terminal keeps native scrollback, wheel-scroll,
+    text selection and copy — the whole point of this mode. The box only exists
+    while awaiting input; on submit it's erased, the message is committed to
+    scrollback, and the turn's output streams in above the next box."""
+    from . import inputbox
+
+    backend = "Postgres" if cfg.database_url else "in-memory"
+    mcp_lines = _connect_mcp(h)
+    session = h.start_session(external_id)
+    ui.welcome(
+        version=__version__,
+        user=external_id,
+        provider_label=provider_label(cfg),
+        model=cfg.provider.model,
+        backend=backend,
+        session_id=session.id,
+    )
+    for kind, name, url, extra in mcp_lines:
+        if kind == "ok":
+            ui.mcp_connected(name, url, extra)
+        else:
+            ui.mcp_failed(name, url, Exception(extra))
+    state = {"session": session, "last": {"user": "", "answer": ""}}
+    _install_line_prompts(h)
+    history: list[str] = []
+
+    def run(message: str) -> None:
+        state["last"]["user"] = message
+        view = _TurnView(state["session"].token_budget)
+        try:
+            view.begin()
+            for ev in h.run_turn_stream(state["session"], message):
+                view.handle(ev)
+        finally:
+            view.close()
+        state["last"]["answer"] = view.answer
+
+    try:
+        while True:
+            ui.console.print()  # a breath of space between the box and prior output
+            try:
+                line = inputbox.read_boxed(ui.console, prompt=f"{ui.PROMPT} ", history=history)
+            except KeyboardInterrupt:
+                break
+            if line is None:  # Ctrl-D on an empty box
+                break
+            msg = line.strip()
+            if not msg:
+                continue
+            history.append(msg)
+            # The box was erased on submit — echo the message into scrollback so
+            # the conversation reads top-to-bottom like any shell session.
+            ui.console.print(f"[{ui.C_ACCENT}]{ui.PROMPT}[/] {msg}")
+            if msg in {"exit", "quit", "/exit", "/quit"}:
+                break
+            if msg.startswith("/"):
+                ui.console.print()
+                state["session"] = _run_command(h, state["session"], external_id, msg, run, state["last"])
+                continue
+            run(msg)
+    except EOFError:
         pass
     created = h.close_session(state["session"])
     if created:

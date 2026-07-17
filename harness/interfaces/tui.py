@@ -28,7 +28,8 @@ from textual.containers import Vertical, VerticalScroll
 from textual.suggester import Suggester
 from textual.widgets import Header, Input, Static
 
-from ..core import DENY
+from ..core import ALLOW, ALWAYS, DENY
+from ..core.permissions import next_mode
 from . import mcpstore, prefs, ui
 
 # directories skipped in @-path autocomplete / directory expansion
@@ -134,7 +135,7 @@ def _os_clipboard_write(text: str) -> str | None:
 _SLASH_NAMES = [
     "/help", "/session", "/sessions", "/skills", "/skills add", "/tools", "/mcp",
     "/resume", "/retry", "/copy", "/save", "/persona", "/system-prompt", "/model",
-    "/budget", "/theme", "/mode", "/auto", "/manual", "/clear", "/new", "/exit", "/quit",
+    "/budget", "/theme", "/mode", "/auto", "/plan", "/manual", "/clear", "/new", "/exit", "/quit",
 ]
 
 
@@ -229,7 +230,7 @@ class PermissionBar(Static):
         super().__init__("", **kwargs)
         self._resolver: Any = None
 
-    def ask(self, display: str, summary: str, resolver: Any) -> None:
+    def ask(self, display: str, summary: str, resolver: Any, *, hint: str | None = None) -> None:
         self._resolver = resolver
         body = Text()
         body.append("permission  ", style="bold")
@@ -237,7 +238,7 @@ class PermissionBar(Static):
         if summary:
             body.append(f"  {summary}", style="dim")
         body.append("\n")
-        body.append("[y] allow once   [a] allow all session   [n]/esc deny", style="dim")
+        body.append(hint or "[y] allow once   [a] allow all session   [n]/esc deny", style="dim")
         self.update(body)
         self.display = True
         self.focus()
@@ -249,10 +250,40 @@ class PermissionBar(Static):
             resolver(decision)
 
 
+class SelectableStatic(Static):
+    """A `Static` that stays mouse-selectable even when it renders a rich
+    renderable (Markdown, panels, tables).
+
+    Textual can only extract text from a widget when it renders to `Text`/
+    `Content`; a `Static(Markdown(...))` returns `None` from `get_selection`, so
+    dragging over an agent answer highlights nothing and copies nothing. We fix
+    that by carrying the message's source text and handing it to Textual on
+    demand. Textual can't map sub-offsets inside a complex renderable, so such a
+    drag is a whole-widget selection — for a chat message that simply means the
+    whole answer is selected and copied, which is what people want anyway. Plain
+    Text/str content keeps normal per-character selection via `super()`."""
+
+    def __init__(self, renderable: Any, *, select_text: str = "", **kwargs: Any) -> None:
+        super().__init__(renderable, **kwargs)
+        self._select_text = select_text
+
+    def set_content(self, renderable: Any, select_text: str) -> None:
+        """Update both the rendered content and the text copied on selection —
+        used while an answer streams in chunk by chunk."""
+        self._select_text = select_text
+        self.update(renderable)
+
+    def get_selection(self, selection: Any) -> tuple[str, str] | None:
+        if self._select_text:
+            return selection.extract(self._select_text), "\n"
+        return super().get_selection(selection)
+
+
 class HarnessApp(App):
     CSS = """
     #log { height: 1fr; padding: 0 1; }
     #log > * { width: 1fr; height: auto; }
+    #log > .turn-start { margin-top: 1; }
     #status { height: 1; padding: 0 1; color: $text-muted; background: $panel; }
     #bottom { dock: bottom; height: auto; margin-bottom: 1; }
     #prompt { height: 5; border: none;
@@ -271,7 +302,7 @@ class HarnessApp(App):
         ("escape", "interrupt", "stop"),
         ("ctrl+d", "quit", "quit"),
         ("ctrl+l", "clear_log", "clear"),
-        Binding("shift+tab", "toggle_mode", "auto/manual", priority=True),
+        Binding("shift+tab", "toggle_mode", "cycle mode", priority=True),
         # Keyboard scrolling of the history — mouse capture is off (so drag-select
         # + copy work), which also disables wheel scroll, so these stand in for it.
         Binding("pageup", "scroll_log('page_up')", "scroll up", show=False),
@@ -301,7 +332,7 @@ class HarnessApp(App):
         self.model = model
         self.mcp_lines = mcp_lines
         self._md_buf: list[str] = []
-        self._md_widget: Static | None = None
+        self._md_widget: SelectableStatic | None = None
         self._rendered_ui: set[str] = set()
         self._busy = False
         self._label = ""
@@ -318,6 +349,10 @@ class HarnessApp(App):
         self._ac_open = False  # @file dropdown visible?
         self._ac_matches: list[str] = []  # current dropdown entries (completed rel paths)
         self._ac_sel = 0  # highlighted index in the dropdown
+        # An in-flight AskUser prompt: (threading.Event, box) while the turn's
+        # worker thread is blocked waiting for the human's typed answer; None
+        # otherwise. Set/cleared by _ask_user (worker) and _submit (UI thread).
+        self._asking: tuple | None = None
         saved_theme = prefs.load()["theme"]
         if saved_theme and saved_theme in self.available_themes:
             self.theme = saved_theme
@@ -343,6 +378,10 @@ class HarnessApp(App):
         # the turn's worker thread while an inline bar below the input collects
         # the y/a/n answer on the UI thread.
         self.harness.permissions.asker = self._ask_permission
+        # AskUser pauses the turn mid-flight for free-form human input; the
+        # prompter blocks the worker thread while the answer is typed into the
+        # (re-enabled) main input on the UI thread. See _ask_user / _submit.
+        self.harness.tools.prompter = self._ask_user
         # @file mentions and /commands complete against the workspace root (the
         # folder chat was launched in, same as Bash/Write/Edit resolve against).
         self._root = Path(getattr(self.harness.sandbox, "workspace", None) or os.getcwd())
@@ -366,10 +405,44 @@ class HarnessApp(App):
         self.query_one("#prompt", Input).focus()
         self._refresh_status()
 
+    def get_system_commands(self, screen):
+        """Drop Textual's built-in "Maximize/Minimize the widget" palette entries
+        — this is a single-pane chat, so widget zooming has no meaning here."""
+        for command in super().get_system_commands(screen):
+            if command.title in ("Maximize", "Minimize"):
+                continue
+            yield command
+
+    def copy_to_clipboard(self, text: str) -> None:
+        """Route Textual's built-in selection copy to the real OS clipboard.
+        Textual's own implementation only emits OSC-52, which several terminals
+        drop (macOS Terminal, the VS Code terminal), so we also pipe to
+        pbcopy/wl-copy/xclip — the same reliable path /copy uses. super() still
+        runs so OSC-52-capable terminals keep working too."""
+        super().copy_to_clipboard(text)
+        _os_clipboard_write(text)
+
+    def on_text_selected(self, event: Any) -> None:
+        """Auto-copy the moment a mouse drag-selection ends, so copying works
+        with the mouse *alone*. We can't bind a copy key — ctrl+c is taken for
+        interrupt and super+c only exists on macOS — and Textual doesn't copy on
+        its own, so without this a drag would highlight but never reach the
+        clipboard. Mirrors the X11/primary-selection "select = copy" habit; a
+        plain click posts this too but selects nothing, so it's a no-op then."""
+        text = self.screen.get_selected_text()
+        if text:
+            self.copy_to_clipboard(text)
+            # transient toast, not a log line — a selection can happen constantly
+            self.notify(f"copied {len(text)} chars", timeout=2)
+
     # -- rendering helpers --------------------------------------------------
-    def _write(self, renderable: Any) -> Static:
+    def _write(self, renderable: Any, *, turn_start: bool = False, select_text: str = "") -> SelectableStatic:
         log = self.query_one("#log", VerticalScroll)
-        widget = Static(renderable)
+        widget = SelectableStatic(renderable, select_text=select_text)
+        # A single blank row separates conversational turns; a turn's own
+        # outputs (tool calls, results, the reply) sit tight beneath it.
+        if turn_start:
+            widget.add_class("turn-start")
         log.mount(widget)
         log.scroll_end(animate=False)
         return widget
@@ -456,6 +529,14 @@ class HarnessApp(App):
     # -- input --------------------------------------------------------------
     @on(Input.Submitted, "#prompt")
     def _submit(self, event: Input.Submitted) -> None:
+        # An AskUser prompt is in flight: this Enter is the human's answer, not a
+        # new message. (The input is only enabled mid-turn because _ask_user
+        # re-enabled it, so a submit here is unambiguously the answer.) Hand it
+        # back to the blocked worker thread and stop.
+        if self._asking is not None:
+            self._answer_ask(event.value.strip())
+            event.input.value = ""
+            return
         # Enter picks the highlighted @file match when the dropdown is open,
         # rather than sending the message (the input keeps the completed value).
         if self._ac_open and self._ac_accept():
@@ -478,7 +559,7 @@ class HarnessApp(App):
         if msg in {"exit", "quit", "/exit", "/quit"}:
             self.exit()
             return
-        self._write(ui.user_line(msg))
+        self._write(ui.user_line(msg), turn_start=True)
         if msg.startswith("/"):
             self._slash(msg)
             return
@@ -548,18 +629,30 @@ class HarnessApp(App):
         if ev.kind == "text":
             self._md_buf.append(ev.text)
             self._answer.append(ev.text)
+            md = "".join(self._md_buf)
             if self._md_widget is None:
-                self._md_widget = self._write(Markdown("".join(self._md_buf)))
+                # select_text=md so a drag over the answer selects+copies its
+                # markdown source (Markdown renderables aren't selectable otherwise).
+                self._md_widget = self._write(Markdown(md), select_text=md)
             else:
-                self._md_widget.update(Markdown("".join(self._md_buf)))
+                self._md_widget.set_content(Markdown(md), md)
                 self.query_one("#log", VerticalScroll).scroll_end(animate=False)
         elif ev.kind == "tool_start":
             self._end_md()
             name = ui.tool_display_name(ev.name, ev.args)
-            widget = ui.ui_renderable(ev.args.get("root")) if ev.name == "RenderUI" else None
+            if ev.name == "RenderUI":
+                widget = ui.ui_renderable(ev.args.get("root"))
+            elif ev.name == "ExitPlanMode":
+                widget = ui.plan_renderable(ev.args.get("plan", ""))
+            else:
+                widget = None
             if widget is not None:
                 self._write(widget)
-                self._rendered_ui.add(ev.call_id)
+                if ev.name == "RenderUI":
+                    # ExitPlanMode is deliberately NOT added to _rendered_ui —
+                    # the normal tool_result line below still prints the
+                    # approve/reject outcome, unlike RenderUI's pure ack noise.
+                    self._rendered_ui.add(ev.call_id)
             else:
                 self._write(ui.tool_call_renderable(name, ui.tool_args_str(ev.name, ev.args)))
             self._label = f"running {name}…"
@@ -592,27 +685,42 @@ class HarnessApp(App):
     # -- permission mode ----------------------------------------------------
     def _refresh_mode_hint(self) -> None:
         """Persistent indicator line under the input (Claude-Code style)."""
-        if self.harness.permissions.mode == "manual":
+        mode = self.harness.permissions.mode
+        if mode == "manual":
             text = "[] manual mode · approve each tool  (shift+tab to cycle)"
+        elif mode == "plan":
+            text = "plan mode · read-only, call ExitPlanMode when ready  (shift+tab to cycle)"
         else:
             text = ">> auto mode · run all tools  (shift+tab to cycle)"
         self.query_one("#mode-hint", Static).update(text)
 
     def _set_mode(self, mode: str) -> None:
-        mode = self.harness.permissions.set_mode(mode)
+        mode = self.harness.set_permission_mode(mode)
         prefs.save(permission_mode=mode)
         self._refresh_mode_hint()
 
     def action_toggle_mode(self) -> None:
-        """shift+tab: flip auto <-> manual, reflected in the bottom hint line."""
-        self._set_mode("manual" if self.harness.permissions.mode == "auto" else "auto")
+        """shift+tab: cycle auto -> plan -> manual -> auto, reflected in the
+        bottom hint line."""
+        self._set_mode(next_mode(self.harness.permissions.mode))
 
     def _ask_permission(self, name: str, args: dict) -> str:
         """Called from the turn worker thread. Reveal the inline permission bar
         below the input on the UI thread and block until the user answers, then
-        return ALLOW / ALWAYS / DENY and hand focus back to the input."""
-        display = ui.tool_display_name(name, args)
-        summary = ui.tool_args_str(name, args)
+        return ALLOW / ALWAYS / DENY and hand focus back to the input.
+
+        ExitPlanMode gets its own prompt text (the plan itself is already
+        visible above, rendered by _handle's tool_start branch) and, on
+        approval, flips the mode to manual right here."""
+        if name == "ExitPlanMode":
+            display = "approve this plan and start implementing?"
+            plan = args.get("plan", "")
+            summary = f"{len(plan.splitlines())} line plan above" if plan.strip() else ""
+            hint = "[y] approve   [n]/esc keep refining"
+        else:
+            display = ui.tool_display_name(name, args)
+            summary = ui.tool_args_str(name, args)
+            hint = None
         event = threading.Event()
         box = {"decision": DENY}
 
@@ -622,15 +730,69 @@ class HarnessApp(App):
                 self.query_one("#prompt", Input).focus()
                 event.set()
 
-            self.query_one("#perm", PermissionBar).ask(display, summary, resolver)
+            self.query_one("#perm", PermissionBar).ask(display, summary, resolver, hint=hint)
 
         self.call_from_thread(show)
         event.wait()
-        return box["decision"]
+        decision = box["decision"]
+        if name == "ExitPlanMode" and decision in (ALLOW, ALWAYS):
+            # NOT self.harness.set_permission_mode(...) — that would eagerly
+            # deregister ExitPlanMode from the registry before
+            # ToolRegistry.dispatch looks it up for THIS call. Flip the mode
+            # only; AgentLoop._run_steps resyncs the registry at the top of
+            # the next step, once dispatch of this approved call has
+            # finished. See sync_plan_mode_tool's docstring.
+            def land_in_manual() -> None:
+                self.harness.permissions.set_mode("manual")
+                prefs.save(permission_mode="manual")
+                self._refresh_mode_hint()
+
+            self.call_from_thread(land_in_manual)
+        return decision
+
+    def _ask_user(self, question: str, meta: dict) -> str:
+        """Called from the turn worker thread (AskUser tool). Render the question
+        in the log and re-enable the main input to collect a free-form answer on
+        the UI thread, blocking the worker until the human submits it. Returns the
+        typed answer (empty string if interrupted)."""
+        event = threading.Event()
+        box = {"answer": ""}
+
+        def show() -> None:
+            self._end_md()  # flush any streamed markdown before the question panel
+            self._write(ui.ask_renderable(question, meta.get("options")))
+            self._asking = (event, box)
+            inp = self.query_one("#prompt", Input)
+            inp.disabled = False
+            inp.placeholder = "Type your answer…   (enter to send)"
+            inp.focus()
+
+        self.call_from_thread(show)
+        event.wait()
+        return box["answer"]
+
+    def _answer_ask(self, answer: str) -> None:
+        """UI thread: deliver the human's AskUser answer back to the blocked
+        worker thread and restore the input to its normal (disabled, mid-turn)
+        state."""
+        pending, self._asking = self._asking, None
+        if pending is None:
+            return
+        event, box = pending
+        box["answer"] = answer
+        self._write(ui.user_line(answer or "(no answer)"))
+        inp = self.query_one("#prompt", Input)
+        inp.disabled = True
+        inp.placeholder = "Message…   (/help · @file · ↑ history · ctrl+c stop)"
+        event.set()
 
     def action_interrupt(self) -> None:
-        """Ctrl+C / Esc: dismiss the @file dropdown first, else stop a running
-        turn, else quit the app."""
+        """Ctrl+C / Esc: answer a pending AskUser with an empty string first (so
+        the blocked worker unblocks), else dismiss the @file dropdown, else stop a
+        running turn, else quit the app."""
+        if self._asking is not None:
+            self._answer_ask("")
+            return
         if self._ac_open:
             self._ac_close()
             return
@@ -664,7 +826,7 @@ class HarnessApp(App):
             self._resume(args[0] if args else "")
         elif cmd == "/retry":
             if self._last_user:
-                self._write(ui.user_line(self._last_user))
+                self._write(ui.user_line(self._last_user), turn_start=True)
                 self._begin_turn(self._last_user)
             else:
                 self._write(ui.info_line("nothing to retry yet"))
@@ -682,11 +844,11 @@ class HarnessApp(App):
             self._budget(args)
         elif cmd == "/theme":
             self._theme(args)
-        elif cmd in ("/auto", "/manual"):
+        elif cmd in ("/auto", "/manual", "/plan"):
             self._set_mode(cmd[1:])
         elif cmd == "/mode":
             self._write(ui.info_line(
-                f"permission mode: {self.harness.permissions.mode}  (/auto · /manual · shift+tab)"
+                f"permission mode: {self.harness.permissions.mode}  (/auto · /plan · /manual · shift+tab)"
             ))
         elif cmd == "/mcp":
             self._mcp(args)
@@ -872,9 +1034,10 @@ def _backend(harness: Any) -> str:
 def run_tui(
     harness: Any, session: Any, external_id: str, provider_label: str, model: str, mcp_lines: list[tuple]
 ) -> int:
-    # mouse=False stops Textual from emitting the mouse-tracking escape codes
-    # (\x1b[?1000h etc.). Without them the terminal keeps native text selection,
-    # so drag-to-select + Cmd/Ctrl+C work like a normal shell (and like Claude
-    # Code). Trade-off: no mouse-wheel scroll — use PageUp/PageDown/arrows.
-    HarnessApp(harness, session, external_id, provider_label, model, mcp_lines).run(mouse=False)
+    # Mouse tracking ON (the default) so the wheel scrolls the history. Copy
+    # still works two ways: Textual's own drag-to-select + Cmd/Ctrl+C (which
+    # HarnessApp.copy_to_clipboard routes to the real OS clipboard, not just
+    # OSC-52), and — in any terminal — holding Option (macOS) / Shift (most
+    # others) while dragging to force the terminal's native selection + copy.
+    HarnessApp(harness, session, external_id, provider_label, model, mcp_lines).run()
     return 0

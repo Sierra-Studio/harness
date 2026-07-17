@@ -57,6 +57,7 @@ def test_permission_mode_default_and_env():
 
     assert PermissionConfig.from_env({}).mode == "auto"  # default: all commands approved
     assert PermissionConfig.from_env({"HARNESS_PERMISSION_MODE": "manual"}).mode == "manual"
+    assert PermissionConfig.from_env({"HARNESS_PERMISSION_MODE": "plan"}).mode == "plan"
     assert PermissionConfig.from_env({"HARNESS_PERMISSION_MODE": "bogus"}).mode == "auto"
 
 
@@ -72,6 +73,20 @@ def test_permission_mode_real_env_wins_over_pref(temp_store, monkeypatch):
     # overwrite the env-derived mode with the pref. Config() defaults to "auto".
     monkeypatch.setenv("HARNESS_PERMISSION_MODE", "auto")
     prefs.save(permission_mode="manual")
+    cfg = prefs.apply_defaults(Config(), from_dotenv=frozenset())
+    assert cfg.permissions.mode == "auto"
+
+
+def test_permission_mode_plan_saved_pref_applies(temp_store, monkeypatch):
+    monkeypatch.delenv("HARNESS_PERMISSION_MODE", raising=False)
+    prefs.save(permission_mode="plan")
+    cfg = prefs.apply_defaults(Config())
+    assert cfg.permissions.mode == "plan"
+
+
+def test_permission_mode_real_env_wins_over_plan_pref(temp_store, monkeypatch):
+    monkeypatch.setenv("HARNESS_PERMISSION_MODE", "auto")
+    prefs.save(permission_mode="plan")
     cfg = prefs.apply_defaults(Config(), from_dotenv=frozenset())
     assert cfg.permissions.mode == "auto"
 

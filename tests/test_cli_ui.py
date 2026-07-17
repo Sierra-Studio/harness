@@ -47,6 +47,17 @@ def test_summarize_result_extracts_mcp_text():
     assert ui.summarize_result(raw) == "15 meetings found"
 
 
+def test_ask_renderable_shows_question_and_options():
+    out = _render(ui.ask_renderable("Deploy to prod now?", ["approve", "reject"]))
+    assert "Deploy to prod now?" in out
+    assert "approve" in out and "reject" in out
+    assert "your input" in out  # panel title
+    # no options -> no options hint line
+    plain = _render(ui.ask_renderable("Which region?"))
+    assert "Which region?" in plain
+    assert "options:" not in plain
+
+
 def test_is_error_result():
     assert ui.is_error_result("ERROR: bad payload") is True
     assert ui.is_error_result(json.dumps({"content": [], "isError": True})) is True
@@ -102,6 +113,13 @@ def test_ui_renderable_renders_widget_tree():
     assert "Sync" in out and "Jul 9" in out
     assert "wk1" in out and "█" in out  # bar chart drew bars
     assert "done" in out
+
+
+def test_plan_renderable_renders_markdown_and_empty_fallback():
+    out = _render(ui.plan_renderable("# Title\nbody text"))
+    assert "Title" in out and "body text" in out
+    out = _render(ui.plan_renderable(""))
+    assert "empty plan" in out
 
 
 def test_list_sessions_and_resolve_resume():
@@ -287,6 +305,97 @@ def test_at_dropdown_multi_match_navigate_and_pick(tmp_path):
             await pilot.pause()
             assert app.query_one("#prompt", PromptInput).value == "@apple.txt "
             assert app._ac_open is False and app._busy is False
+
+    asyncio.run(scenario())
+
+
+def test_shift_tab_cycles_three_way_mode(tmp_path, monkeypatch):
+    import asyncio
+    import dataclasses
+
+    from textual.widgets import Static
+
+    from harness.core import Harness
+    from harness.interfaces import prefs
+    from harness.interfaces.tui import HarnessApp
+    from harness.llm.provider import FakeProvider
+    from harness.settings import Config
+
+    # _set_mode persists via prefs.save() — keep it off the dev's real prefs file.
+    monkeypatch.setattr(prefs, "STORE", tmp_path / "preferences.json")
+
+    async def scenario():
+        h = Harness(
+            dataclasses.replace(Config(), database_url=""),
+            system_prompt="s",
+            provider=FakeProvider(context_window=8000),
+        )
+        app = HarnessApp(h, h.start_session("u"), "u", "F", "f", [])
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert h.permissions.mode == "auto"
+            await pilot.press("shift+tab")
+            await pilot.pause()
+            assert h.permissions.mode == "plan"
+            assert "plan mode" in _render(app.query_one("#mode-hint", Static).render())
+            await pilot.press("shift+tab")
+            await pilot.pause()
+            assert h.permissions.mode == "manual"
+            assert "manual mode" in _render(app.query_one("#mode-hint", Static).render())
+            await pilot.press("shift+tab")
+            await pilot.pause()
+            assert h.permissions.mode == "auto"
+            assert "auto mode" in _render(app.query_one("#mode-hint", Static).render())
+
+    asyncio.run(scenario())
+
+
+def test_exit_plan_mode_approval_in_tui_flips_mode_and_deregisters(tmp_path, monkeypatch):
+    """Drives HarnessApp._ask_permission from a real background thread — the
+    same shape as the production `@work(thread=True)` turn worker — to verify
+    the ExitPlanMode-specific prompt renders and approving it flips the mode
+    to manual via the UI thread's call_from_thread callback."""
+    import asyncio
+    import dataclasses
+    import threading
+
+    from harness.core import ALLOW, Harness
+    from harness.interfaces import prefs
+    from harness.interfaces.tui import HarnessApp, PermissionBar
+    from harness.llm.provider import FakeProvider
+    from harness.settings import Config, PermissionConfig
+
+    monkeypatch.setattr(prefs, "STORE", tmp_path / "preferences.json")
+
+    async def scenario():
+        h = Harness(
+            dataclasses.replace(Config(), database_url="", permissions=PermissionConfig(mode="plan")),
+            system_prompt="s",
+            provider=FakeProvider(context_window=8000),
+        )
+        assert "ExitPlanMode" in h.tools.tools
+        app = HarnessApp(h, h.start_session("u"), "u", "F", "f", [])
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            result: dict = {}
+
+            def call_asker():
+                result["decision"] = app._ask_permission("ExitPlanMode", {"plan": "do the thing"})
+
+            t = threading.Thread(target=call_asker)
+            t.start()
+            bar = app.query_one("#perm", PermissionBar)
+            for _ in range(50):
+                await pilot.pause()
+                if bar.display:
+                    break
+            assert bar.display is True
+            assert "approve" in _render(bar.render()).lower()
+            await pilot.press("y")
+            await pilot.pause()
+            t.join(timeout=2)
+            assert result.get("decision") == ALLOW
+            assert h.permissions.mode == "manual"
 
     asyncio.run(scenario())
 

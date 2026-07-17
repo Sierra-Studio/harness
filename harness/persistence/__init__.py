@@ -2,6 +2,18 @@
 
 from __future__ import annotations
 
-from .repository import InMemoryRepository, PostgresRepository, Repository, build_repository
+from .repository import (
+    InMemoryRepository,
+    PostgresRepository,
+    Repository,
+    SQLiteRepository,
+    build_repository,
+)
 
-__all__ = ["Repository", "InMemoryRepository", "PostgresRepository", "build_repository"]
+__all__ = [
+    "Repository",
+    "InMemoryRepository",
+    "SQLiteRepository",
+    "PostgresRepository",
+    "build_repository",
+]

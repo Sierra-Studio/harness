@@ -19,12 +19,14 @@ from .memory import NullSkills, RepositorySkills, Skills
 from .observability import LoggingTracer, NullTracer, Observer, Tracer
 from .settings import BashConfig, Config, LoopConfig, MemoryConfig, ProviderConfig
 from .tools import (
+    AskUser,
     Bash,
     CallTool,
     GetSkill,
     GetTools,
     McpServer,
     McpStdioServer,
+    Prompter,
     ProviderHost,
     RenderUI,
     SearchSkills,
@@ -33,6 +35,7 @@ from .tools import (
     ToolBundle,
     ToolContext,
     ToolProvider,
+    ToolSuspend,
     default_tools,
     make_tool,
     tool,
@@ -65,6 +68,9 @@ __all__ = [
     "GetSkill",
     "Bash",
     "RenderUI",
+    "AskUser",
+    "Prompter",
+    "ToolSuspend",
     "ToolProvider",
     "ToolBundle",
     "McpServer",
